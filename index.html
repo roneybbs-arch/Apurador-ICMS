@@ -1466,18 +1466,91 @@ function extrairDadosXML(doc){
 function cruzarERPcomXML(errosXML){
   if(!E_ROWS.length){setMsg('xml','⚠ Importe primeiro o arquivo de compras na aba Entradas.','var(--amber)');const pw=G('pw-xml');if(pw)pw.style.display='none';const emp=G('xml-empty');if(emp)emp.style.display='block';return;}
   XML_ROWS=[];
-  // Agrupar ERP por NF
+
+  // ── Agrupar ERP por NF ─────────────────────────────────────
   const erpPorNF={};
+  // Índices para fallback
+  const erpPorNumNF={};   // nNF (número da nota) → lista de NFs
+  const erpPorNFCompra={}; // nf_compra → NF
+
   E_ROWS.forEach(function(r){
+    // Chave primária: CHAVE_NFE de 44 dígitos
     const chave=(r.chave_nfe||'').replace(/[^0-9]/g,'');
-    const nfe=(r.nfe||'').replace(/[^0-9]/g,'');
-    const key=chave||nfe;if(!key)return;
-    if(!erpPorNF[key])erpPorNF[key]={chave_erp:chave,nfe_erp:r.nfe,empresa:r.empresa,razao:r.razao,emissao:r.emissao,itens:[]};
+    // Fallback 1: número da NF (campo nfe/NF_NUMERO)
+    const nfeNum=(r.nfe||'').replace(/[^0-9]/g,'');
+    // Fallback 2: NF_COMPRA (ID interno)
+    const nfCompra=(r.nf_compra||'').replace(/[^0-9]/g,'');
+
+    const key=chave||nfeNum||nfCompra;
+    if(!key)return;
+
+    if(!erpPorNF[key])erpPorNF[key]={
+      chave_erp:chave,nfe_erp:r.nfe,nf_compra_erp:r.nf_compra,
+      empresa:r.empresa,razao:r.razao,emissao:r.emissao,itens:[]
+    };
     erpPorNF[key].itens.push(r);
+
+    // Índice por número da NF para fallback
+    if(nfeNum){
+      if(!erpPorNumNF[nfeNum])erpPorNumNF[nfeNum]=[];
+      erpPorNumNF[nfeNum].push(key);
+    }
   });
+
+  // ── Construir índice reverso dos XMLs ─────────────────────
+  // Além da chave de 44 dígitos, indexar por nNF (número da nota)
+  const xmlPorNumNF={};
+  Object.values(XML_MAP_CHAVE).forEach(function(x){
+    if(x.nNF){
+      if(!xmlPorNumNF[x.nNF])xmlPorNumNF[x.nNF]=[];
+      xmlPorNumNF[x.nNF].push(x);
+    }
+  });
+
+  // ── Diagnóstico ───────────────────────────────────────────
+  const totalErp=Object.keys(erpPorNF).length;
+  const totalXml=Object.keys(XML_MAP_CHAVE).length;
+  const erpTemChave=Object.values(erpPorNF).filter(n=>n.chave_erp&&n.chave_erp.length===44).length;
+  console.log('ERP NFs:', totalErp, '| Com chave 44 dígitos:', erpTemChave, '| XMLs indexados:', totalXml);
+  console.log('Exemplo chave ERP:', Object.values(erpPorNF)[0]?.chave_erp);
+  console.log('Exemplo chave XML:', Object.keys(XML_MAP_CHAVE)[0]);
+
   let semXML=0,divNCM=0,divICMS=0;
   Object.values(erpPorNF).forEach(function(nf){
-    const xmlNF=XML_MAP_CHAVE[nf.chave_erp]||null;
+    let xmlNF=null;
+
+    // Tentativa 1: chave exata de 44 dígitos
+    if(nf.chave_erp&&nf.chave_erp.length===44){
+      xmlNF=XML_MAP_CHAVE[nf.chave_erp]||null;
+    }
+
+    // Tentativa 2: chave com variações de tamanho (alguns ERPs gravam com espaços ou chars extras)
+    if(!xmlNF&&nf.chave_erp&&nf.chave_erp.length>30){
+      // Buscar XML cuja chave contenha a chave do ERP ou vice-versa
+      const chaveErpClean=nf.chave_erp.replace(/\D/g,'');
+      Object.keys(XML_MAP_CHAVE).forEach(function(k){
+        if(!xmlNF&&(k.includes(chaveErpClean)||chaveErpClean.includes(k))){
+          xmlNF=XML_MAP_CHAVE[k];
+        }
+      });
+    }
+
+    // Tentativa 3: número da NF + fornecedor (razão social)
+    if(!xmlNF&&nf.nfe_erp){
+      const nfeNum=(nf.nfe_erp||'').replace(/\D/g,'').replace(/^0+/,''); // remove zeros à esquerda
+      const xmlCandidatos=xmlPorNumNF[nfeNum]||xmlPorNumNF[nf.nfe_erp]||[];
+      if(xmlCandidatos.length===1){
+        // Apenas um XML com esse número — match direto
+        xmlNF=xmlCandidatos[0];
+      } else if(xmlCandidatos.length>1){
+        // Múltiplos XMLs com mesmo número — tentar match pelo fornecedor
+        const razaoNorm=(nf.razao||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,15);
+        xmlNF=xmlCandidatos.find(x=>{
+          const emitNorm=(x.xNomeEmit||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,15);
+          return emitNorm===razaoNorm;
+        })||xmlCandidatos[0];
+      }
+    }
     const totalICMS_ERP=nf.itens.reduce(function(s,r){return s+r.icms;},0);
     const totalBC_ERP=nf.itens.reduce(function(s,r){return s+r.bc;},0);
     const totalNF_ERP=nf.itens.reduce(function(s,r){return s+r.total;},0);
@@ -1499,7 +1572,13 @@ function cruzarERPcomXML(errosXML){
   sm('xml-m-sem',semXML>0?semXML+' NFs':'Nenhuma');
   sm('xml-m-div',(divNCM+divICMS)>0?(divNCM+' NCM · '+divICMS+' ICMS'):'Nenhuma');
   let resumo='';
-  if(semXML>0)resumo+='<div class="alert al-warn"><i class="ti ti-alert-triangle al-i"></i><div><strong>'+semXML+' NFs do ERP sem XML correspondente.</strong> Verifique se os XMLs foram baixados da SEFAZ ou se as notas foram canceladas pelo fornecedor.</div></div>';
+  if(semXML>0){
+    const temChave=Object.values(erpPorNF||{}).some(n=>n.chave_erp&&n.chave_erp.length===44);
+    const msgChave=!temChave
+      ? ' <strong>Atenção:</strong> O arquivo de compras não contém o campo CHAVE_NFE. Use a <strong>Query 6</strong> do arquivo SQL para exportar com a chave de 44 dígitos, que é o critério principal de cruzamento.'
+      : ' Verifique se todos os XMLs do período foram baixados da SEFAZ, ou se algumas notas foram canceladas pelo fornecedor.';
+    resumo+='<div class="alert al-warn"><i class="ti ti-alert-triangle al-i"></i><div><strong>'+semXML+' NFs do ERP sem XML correspondente.</strong>'+msgChave+'</div></div>';
+  }
   if(Math.abs(totalDiff)>0.05){const fav=totalDiff<0;resumo+='<div class="alert '+(fav?'al-ok':'al-warn')+'"><i class="ti ti-'+(fav?'circle-check':'alert-triangle')+' al-i"></i><div><strong>Diferença total de ICMS: '+brl(Math.abs(totalDiff))+'.</strong> '+(fav?'O ERP registrou mais crédito que o XML indica — possível crédito a maior.':'O XML tem mais ICMS que o ERP — possível crédito não aproveitado de '+brl(totalDiff)+'.')+'</div></div>';}
   if(!resumo&&semXML===0&&(divNCM+divICMS)===0)resumo='<div class="alert al-ok"><i class="ti ti-circle-check al-i"></i><div><strong>Tudo conferido!</strong> Todas as NFs têm XML e sem divergências.</div></div>';
   const xr=G('xml-resumo');if(xr)xr.innerHTML=resumo;
