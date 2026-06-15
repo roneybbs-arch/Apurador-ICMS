@@ -583,7 +583,8 @@ input[type=number]:focus,select.fi:focus{outline:none;border-color:var(--thalia-
         <th>Fornecedor</th>
         <th>Chave NF-e</th>
         <th>Emissão</th>
-        <th class="td-r">Itens</th>
+        <th>Produto (XML)</th>
+        <th>EAN</th>
         <th>NCM XML</th>
         <th>NCM ERP</th>
         <th class="td-r">Alíq. XML</th>
@@ -1359,7 +1360,11 @@ function carregarXMLs(files){
         const parser=new DOMParser();
         const doc=parser.parseFromString(e.target.result,'text/xml');
         const itens=extrairDadosXML(doc);
-        itens.forEach(function(it){if(it.chave)XML_MAP_CHAVE[it.chave]=it;});
+        itens.forEach(function(it){
+        if(!it.chave)return;
+        if(!XML_MAP_CHAVE[it.chave])XML_MAP_CHAVE[it.chave]=[];
+        XML_MAP_CHAVE[it.chave].push(it);
+      });
       }catch(ex){erros++;}
       done++;
       setProg('xml',Math.round(done/total*80),'');
@@ -1416,7 +1421,11 @@ async function carregarZIP(file){
         const parser=new DOMParser();
         const doc=parser.parseFromString(content,'text/xml');
         const itens=extrairDadosXML(doc);
-        itens.forEach(function(it){if(it.chave)XML_MAP_CHAVE[it.chave]=it;});
+        itens.forEach(function(it){
+        if(!it.chave)return;
+        if(!XML_MAP_CHAVE[it.chave])XML_MAP_CHAVE[it.chave]=[];
+        XML_MAP_CHAVE[it.chave].push(it);
+      });
       }catch(ex){erros++;}
       done++;
       const pct=20+Math.round((done/xmlFiles.length)*70);
@@ -1440,6 +1449,7 @@ function checkXMLDone(total,done,erros){
 }
 
 function extrairDadosXML(doc){
+  // Retorna lista de ITENS (um por produto), cada um com dados da NF + dados do item
   const ns='http://www.portalfiscal.inf.br/nfe';
   function qs(node,tag){const r=node.getElementsByTagNameNS(ns,tag);if(r.length)return r;return node.getElementsByTagName(tag);}
   function qt(node,tag){const r=qs(node,tag);return r.length?r[0].textContent.trim():'';}
@@ -1453,140 +1463,261 @@ function extrairDadosXML(doc){
   const dets=qs(inf,'det');
   const itens=[];
   for(let i=0;i<dets.length;i++){
-    const det=dets[i],prod=qs(det,'prod')[0]||det,imp=qs(det,'imposto')[0]||det,icmsGrp=qs(imp,'ICMS')[0]||imp;
-    const xProd=qt(prod,'xProd'),ncm=qt(prod,'NCM'),ean=qt(prod,'cEAN')||qt(prod,'cEANTrib'),vProd=parseFloat(qt(prod,'vProd'))||0;
-    let pICMS=0,vICMS=0,vBC=0;
+    const det=dets[i],prod=qs(det,'prod')[0]||det;
+    const imp=qs(det,'imposto')[0]||det,icmsGrp=qs(imp,'ICMS')[0]||imp;
+    const cProd=qt(prod,'cProd');
+    const xProd=qt(prod,'xProd');
+    const ncm=qt(prod,'NCM');
+    const ean=(qt(prod,'cEAN')||qt(prod,'cEANTrib')||'').replace(/[^0-9]/g,'');
+    const vProd=parseFloat(qt(prod,'vProd'))||0;
+    const qCom=parseFloat(qt(prod,'qCom'))||0;
+    const vUnCom=parseFloat(qt(prod,'vUnCom'))||0;
+    let pICMS=0,vICMS=0,vBC=0,cst='';
     const tags=['ICMS00','ICMS10','ICMS20','ICMS30','ICMS40','ICMS41','ICMS50','ICMS51','ICMS60','ICMS70','ICMS90','ICMSPart','ICMSST'];
-    for(let t=0;t<tags.length;t++){const nd=qs(icmsGrp,tags[t]);if(nd.length){const n=nd[0];vBC=parseFloat(qt(n,'vBC'))||vBC;pICMS=parseFloat(qt(n,'pICMS'))||pICMS;vICMS=parseFloat(qt(n,'vICMS'))||vICMS;break;}}
-    itens.push({chave,nNF,dhEmi,cnpjEmit,xNomeEmit,xProd,ncm,ean,vProd,vBC_xml:vBC,aliq_xml:pICMS,icms_xml:vICMS});
+    for(let t=0;t<tags.length;t++){const nd=qs(icmsGrp,tags[t]);if(nd.length){const n=nd[0];cst=qt(n,'CST')||qt(n,'CSOSN')||cst;vBC=parseFloat(qt(n,'vBC'))||vBC;pICMS=parseFloat(qt(n,'pICMS'))||pICMS;vICMS=parseFloat(qt(n,'vICMS'))||vICMS;break;}}
+    itens.push({
+      // Dados da NF (repetidos em cada item)
+      chave,nNF,dhEmi,cnpjEmit,xNomeEmit,
+      // Dados do item
+      numItem:i+1,cProd,xProd,ncm,ean,
+      qCom,vUnCom,vProd,cst,
+      vBC_xml:vBC,aliq_xml:pICMS,icms_xml:vICMS
+    });
   }
   return itens;
 }
 
 function cruzarERPcomXML(errosXML){
-  if(!E_ROWS.length){setMsg('xml','⚠ Importe primeiro o arquivo de compras na aba Entradas.','var(--amber)');const pw=G('pw-xml');if(pw)pw.style.display='none';const emp=G('xml-empty');if(emp)emp.style.display='block';return;}
+  if(!E_ROWS.length){
+    setMsg('xml','⚠ Importe primeiro o arquivo de compras na aba Entradas.','var(--amber)');
+    const pw=G('pw-xml');if(pw)pw.style.display='none';
+    const emp=G('xml-empty');if(emp)emp.style.display='block';
+    return;
+  }
   XML_ROWS=[];
 
-  // ── Agrupar ERP por NF ─────────────────────────────────────
-  const erpPorNF={};
-  // Índices para fallback
-  const erpPorNumNF={};   // nNF (número da nota) → lista de NFs
-  const erpPorNFCompra={}; // nf_compra → NF
+  // ── Construir índice do ERP por chave NF-e ─────────────────
+  // Cada entrada = lista de itens/produtos daquela NF
+  const erpPorChave={};   // chave44 → [rows]
+  const erpPorNumNF={};   // nNF     → [rows]  (fallback)
+  const erpTemChave=E_ROWS.some(r=>(r.chave_nfe||'').length===44);
 
   E_ROWS.forEach(function(r){
-    // Chave primária: CHAVE_NFE de 44 dígitos
     const chave=(r.chave_nfe||'').replace(/[^0-9]/g,'');
-    // Fallback 1: número da NF (campo nfe/NF_NUMERO)
-    const nfeNum=(r.nfe||'').replace(/[^0-9]/g,'');
-    // Fallback 2: NF_COMPRA (ID interno)
-    const nfCompra=(r.nf_compra||'').replace(/[^0-9]/g,'');
-
-    const key=chave||nfeNum||nfCompra;
-    if(!key)return;
-
-    if(!erpPorNF[key])erpPorNF[key]={
-      chave_erp:chave,nfe_erp:r.nfe,nf_compra_erp:r.nf_compra,
-      empresa:r.empresa,razao:r.razao,emissao:r.emissao,itens:[]
-    };
-    erpPorNF[key].itens.push(r);
-
-    // Índice por número da NF para fallback
+    const nfeNum=(r.nfe||'').replace(/[^0-9]/g,'').replace(/^0+/,'');
+    if(chave.length===44){
+      if(!erpPorChave[chave])erpPorChave[chave]=[];
+      erpPorChave[chave].push(r);
+    }
     if(nfeNum){
       if(!erpPorNumNF[nfeNum])erpPorNumNF[nfeNum]=[];
-      erpPorNumNF[nfeNum].push(key);
+      erpPorNumNF[nfeNum].push(r);
     }
   });
 
-  // ── Construir índice reverso dos XMLs ─────────────────────
-  // Além da chave de 44 dígitos, indexar por nNF (número da nota)
-  const xmlPorNumNF={};
-  Object.values(XML_MAP_CHAVE).forEach(function(x){
-    if(x.nNF){
-      if(!xmlPorNumNF[x.nNF])xmlPorNumNF[x.nNF]=[];
-      xmlPorNumNF[x.nNF].push(x);
-    }
-  });
+  console.log('ERP rows:',E_ROWS.length,'| Com chave:',Object.keys(erpPorChave).length,'| Por numNF:',Object.keys(erpPorNumNF).length);
+  console.log('XML chaves indexadas:',Object.keys(XML_MAP_CHAVE).length);
 
-  // ── Diagnóstico ───────────────────────────────────────────
-  const totalErp=Object.keys(erpPorNF).length;
-  const totalXml=Object.keys(XML_MAP_CHAVE).length;
-  const erpTemChave=Object.values(erpPorNF).filter(n=>n.chave_erp&&n.chave_erp.length===44).length;
-  console.log('ERP NFs:', totalErp, '| Com chave 44 dígitos:', erpTemChave, '| XMLs indexados:', totalXml);
-  console.log('Exemplo chave ERP:', Object.values(erpPorNF)[0]?.chave_erp);
-  console.log('Exemplo chave XML:', Object.keys(XML_MAP_CHAVE)[0]);
+  // Chaves das NFs ERP processadas (para detectar sem XML)
+  const chavesProcessadas=new Set();
 
-  let semXML=0,divNCM=0,divICMS=0;
-  Object.values(erpPorNF).forEach(function(nf){
-    let xmlNF=null;
+  // ── Para cada XML, cruzar item a item com o ERP ────────────
+  // XML_MAP_CHAVE tem a chave → ARRAY de itens (um por produto)
+  Object.entries(XML_MAP_CHAVE).forEach(function([chaveXML,xmlItens]){
+    // Encontrar NF correspondente no ERP
+    let erpItens=erpPorChave[chaveXML]||null;
 
-    // Tentativa 1: chave exata de 44 dígitos
-    if(nf.chave_erp&&nf.chave_erp.length===44){
-      xmlNF=XML_MAP_CHAVE[nf.chave_erp]||null;
-    }
-
-    // Tentativa 2: chave com variações de tamanho (alguns ERPs gravam com espaços ou chars extras)
-    if(!xmlNF&&nf.chave_erp&&nf.chave_erp.length>30){
-      // Buscar XML cuja chave contenha a chave do ERP ou vice-versa
-      const chaveErpClean=nf.chave_erp.replace(/\D/g,'');
-      Object.keys(XML_MAP_CHAVE).forEach(function(k){
-        if(!xmlNF&&(k.includes(chaveErpClean)||chaveErpClean.includes(k))){
-          xmlNF=XML_MAP_CHAVE[k];
-        }
-      });
-    }
-
-    // Tentativa 3: número da NF + fornecedor (razão social)
-    if(!xmlNF&&nf.nfe_erp){
-      const nfeNum=(nf.nfe_erp||'').replace(/\D/g,'').replace(/^0+/,''); // remove zeros à esquerda
-      const xmlCandidatos=xmlPorNumNF[nfeNum]||xmlPorNumNF[nf.nfe_erp]||[];
-      if(xmlCandidatos.length===1){
-        // Apenas um XML com esse número — match direto
-        xmlNF=xmlCandidatos[0];
-      } else if(xmlCandidatos.length>1){
-        // Múltiplos XMLs com mesmo número — tentar match pelo fornecedor
-        const razaoNorm=(nf.razao||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,15);
-        xmlNF=xmlCandidatos.find(x=>{
-          const emitNorm=(x.xNomeEmit||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,15);
-          return emitNorm===razaoNorm;
-        })||xmlCandidatos[0];
+    // Fallback por número da NF se não achou pela chave
+    if(!erpItens&&xmlItens.length>0){
+      const nNF=(xmlItens[0].nNF||'').replace(/^0+/,'');
+      const candidatos=erpPorNumNF[nNF]||[];
+      if(candidatos.length>0){
+        // Verificar se fornecedor bate
+        const emitNorm=(xmlItens[0].xNomeEmit||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,12);
+        const razaoNorm=(candidatos[0].razao||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,12);
+        if(emitNorm===razaoNorm||candidatos.length===1)erpItens=candidatos;
       }
     }
-    const totalICMS_ERP=nf.itens.reduce(function(s,r){return s+r.icms;},0);
-    const totalBC_ERP=nf.itens.reduce(function(s,r){return s+r.bc;},0);
-    const totalNF_ERP=nf.itens.reduce(function(s,r){return s+r.total;},0);
-    if(!xmlNF){semXML++;XML_ROWS.push({grupo:'sem_xml',empresa:nf.empresa,razao:nf.razao,chave_erp:nf.chave_erp,nfe_erp:nf.nfe_erp,emissao_erp:nf.itens[0].emissao,ncm_xml:'',aliq_xml:0,icms_xml:0,ncm_erp:nf.itens[0].ncm||'',aliq_erp:nf.itens[0].aliq,icms_erp:totalICMS_ERP,bc_erp:totalBC_ERP,total_erp:totalNF_ERP,diff_icms:0,div_ncm:false,div_aliq:false,div_icms:false,status:'sem_xml',itens_erp:nf.itens.length});return;}
-    const totalICMS_XML=xmlNF.icms_xml,diff=totalICMS_XML-totalICMS_ERP;
-    const ncm_erp=(nf.itens[0].ncm||'').replace(/[^0-9]/g,''),ncm_xml=(xmlNF.ncm||'').replace(/[^0-9]/g,'');
-    const div_ncm=!!(ncm_xml&&ncm_erp&&ncm_xml!==ncm_erp);
-    const div_icms=Math.abs(diff)>0.05;
-    const div_aliq=Math.abs(xmlNF.aliq_xml-numAliq(nf.itens[0].aliq))>0.5;
-    if(div_ncm)divNCM++;if(div_icms)divICMS++;
-    const status=(div_ncm||div_icms||div_aliq)?'divergente':'ok';
-    XML_ROWS.push({grupo:status,empresa:nf.empresa,razao:nf.razao,chave_erp:nf.chave_erp,nfe_erp:nf.nfe_erp,emissao_erp:nf.itens[0].emissao,ncm_xml:xmlNF.ncm,aliq_xml:xmlNF.aliq_xml,icms_xml:totalICMS_XML,ncm_erp:nf.itens[0].ncm||'',aliq_erp:nf.itens[0].aliq,icms_erp:totalICMS_ERP,bc_erp:totalBC_ERP,total_erp:totalNF_ERP,diff_icms:diff,div_ncm,div_aliq,div_icms,status,itens_erp:nf.itens.length});
+
+    if(!erpItens||!erpItens.length)return; // XML sem NF no ERP → ignora
+
+    chavesProcessadas.add(chaveXML);
+    // Dados da NF para exibição
+    const nfInfo={
+      chave:chaveXML,
+      nNF:xmlItens[0].nNF,
+      dhEmi:xmlItens[0].dhEmi,
+      empresa:erpItens[0].empresa,
+      razao:erpItens[0].razao||xmlItens[0].xNomeEmit,
+      emissao:erpItens[0].emissao,
+    };
+
+    // ── Cruzar item a item ───────────────────────────────────
+    // Índice dos itens ERP por EAN e por código do produto
+    const erpPorEAN={},erpPorCod={};
+    erpItens.forEach(function(r){
+      const ean=(r.ean||'').replace(/[^0-9]/g,'');
+      const cod=(r.nf_compra+'_'+r.desc).toLowerCase();
+      if(ean){if(!erpPorEAN[ean])erpPorEAN[ean]=[];erpPorEAN[ean].push(r);}
+      if(!erpPorCod[cod])erpPorCod[cod]=[];
+      erpPorCod[cod].push(r);
+    });
+
+    // Rastrear itens ERP já usados (evitar dupla contagem)
+    const erpUsados=new Set();
+
+    xmlItens.forEach(function(xi){
+      const eanXML=(xi.ean||'').replace(/[^0-9]/g,'');
+      let erpItem=null;
+
+      // Match 1: EAN
+      if(eanXML&&eanXML.length>6){
+        const candidatos=(erpPorEAN[eanXML]||[]).filter(r=>!erpUsados.has(r));
+        if(candidatos.length)erpItem=candidatos[0];
+      }
+
+      // Match 2: posição sequencial (se EAN não disponível)
+      if(!erpItem){
+        const unused=erpItens.filter(r=>!erpUsados.has(r));
+        if(unused.length)erpItem=unused[0];
+      }
+
+      if(erpItem)erpUsados.add(erpItem);
+
+      // Comparar NCM
+      const ncmXML=(xi.ncm||'').replace(/[^0-9]/g,'').replace(/^0+/,'');
+      const ncmERP=erpItem?(erpItem.ncm||'').replace(/[^0-9]/g,'').replace(/^0+/,''):'';
+      const div_ncm=!!(ncmXML&&ncmERP&&ncmXML!==ncmERP);
+
+      // Comparar ICMS
+      const icmsERP=erpItem?erpItem.icms:0;
+      const diff=xi.icms_xml-icmsERP;
+      const div_icms=Math.abs(diff)>0.05;
+
+      // Comparar alíquota
+      const aliqERP=erpItem?numAliq(erpItem.aliq):0;
+      const div_aliq=xi.aliq_xml>0&&aliqERP>0&&Math.abs(xi.aliq_xml-aliqERP)>0.5;
+
+      const status=(div_ncm||div_icms||div_aliq)?'divergente':'ok';
+
+      XML_ROWS.push({
+        grupo:status,
+        // NF
+        chave_erp:chaveXML,nfe_erp:nfInfo.nNF,
+        empresa:nfInfo.empresa,razao:nfInfo.razao,
+        emissao_erp:nfInfo.emissao,
+        // Produto XML
+        num_item:xi.numItem,
+        xProd:xi.xProd,
+        ean_xml:xi.ean,
+        ncm_xml:xi.ncm,
+        aliq_xml:xi.aliq_xml,
+        icms_xml:xi.icms_xml,
+        vProd_xml:xi.vProd,
+        // Produto ERP
+        desc_erp:erpItem?(erpItem.desc||erpItem.razao||''):'',
+        ean_erp:erpItem?(erpItem.ean||''):'',
+        ncm_erp:erpItem?(erpItem.ncm||''):'',
+        aliq_erp:erpItem?(erpItem.aliq||0):0,
+        icms_erp:icmsERP,
+        bc_erp:erpItem?(erpItem.bc||0):0,
+        total_erp:erpItem?(erpItem.total||0):0,
+        // Divergência
+        diff_icms:diff,
+        div_ncm,div_aliq,div_icms,
+        status,
+        itens_erp:erpItens.length
+      });
+    });
+
+    // Itens ERP sem correspondência no XML (produto a mais no ERP)
+    erpItens.filter(r=>!erpUsados.has(r)).forEach(function(r){
+      XML_ROWS.push({
+        grupo:'sem_xml_item',
+        chave_erp:chaveXML,nfe_erp:nfInfo.nNF,
+        empresa:nfInfo.empresa,razao:nfInfo.razao,
+        emissao_erp:nfInfo.emissao,
+        num_item:0,xProd:'',ean_xml:'',ncm_xml:'',aliq_xml:0,icms_xml:0,vProd_xml:0,
+        desc_erp:r.desc||'',ean_erp:r.ean||'',ncm_erp:r.ncm||'',
+        aliq_erp:r.aliq||0,icms_erp:r.icms||0,bc_erp:r.bc||0,total_erp:r.total||0,
+        diff_icms:-(r.icms||0),
+        div_ncm:false,div_aliq:false,div_icms:true,
+        status:'divergente',itens_erp:erpItens.length
+      });
+    });
   });
-  const total=XML_ROWS.length,comXML=total-semXML,xmlsTotal=Object.keys(XML_MAP_CHAVE).length;
-  const totalDiff=XML_ROWS.reduce(function(s,r){return s+r.diff_icms;},0);
+
+  // ── NFs do ERP sem XML ─────────────────────────────────────
+  let semXML=0;
+  Object.entries(erpPorChave).forEach(function([chave,rows]){
+    if(chavesProcessadas.has(chave))return;
+    semXML++;
+    const r=rows[0];
+    XML_ROWS.push({
+      grupo:'sem_xml',
+      chave_erp:chave,nfe_erp:r.nfe,
+      empresa:r.empresa,razao:r.razao,
+      emissao_erp:r.emissao,
+      num_item:0,xProd:'',ean_xml:'',ncm_xml:'',aliq_xml:0,icms_xml:0,vProd_xml:0,
+      desc_erp:'',ean_erp:'',ncm_erp:'',aliq_erp:0,
+      icms_erp:rows.reduce((s,r2)=>s+r2.icms,0),
+      bc_erp:rows.reduce((s,r2)=>s+r2.bc,0),total_erp:rows.reduce((s,r2)=>s+r2.total,0),
+      diff_icms:0,div_ncm:false,div_aliq:false,div_icms:false,
+      status:'sem_xml',itens_erp:rows.length
+    });
+  });
+  // Fallback: NFs sem chave no ERP mas com numNF que não bateu
+  if(!erpTemChave){
+    E_ROWS.filter(r=>!(r.chave_nfe||'').length).forEach(function(r){
+      const nfeNum=(r.nfe||'').replace(/[^0-9]/g,'').replace(/^0+/,'');
+      const bateu=Object.values(XML_MAP_CHAVE).some(x=>x.nNF===nfeNum);
+      if(!bateu){semXML++;/* já contado nos sem chave */}
+    });
+  }
+
+  // ── Estatísticas ──────────────────────────────────────────
+  const totalItens=XML_ROWS.length;
+  const divNCM=XML_ROWS.filter(r=>r.div_ncm).length;
+  const divICMS=XML_ROWS.filter(r=>r.div_icms&&r.status!=='sem_xml').length;
+  const totalDiff=XML_ROWS.filter(r=>r.status!=='sem_xml').reduce(function(s,r){return s+r.diff_icms;},0);
+  const nfsComXML=new Set(XML_ROWS.filter(r=>r.status!=='sem_xml').map(r=>r.chave_erp)).size;
+  const xmlsTotal=Object.keys(XML_MAP_CHAVE).length;
+
   const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
-  sm('xml-m-nfs',total+' NFs');
-  sm('xml-m-xml',comXML+' encontrados / '+xmlsTotal+' XMLs');
+  sm('xml-m-nfs',nfsComXML+semXML+' NFs / '+totalItens.toLocaleString('pt-BR')+' itens');
+  sm('xml-m-xml',nfsComXML+' NFs / '+xmlsTotal+' XMLs');
   sm('xml-m-sem',semXML>0?semXML+' NFs':'Nenhuma');
-  sm('xml-m-div',(divNCM+divICMS)>0?(divNCM+' NCM · '+divICMS+' ICMS'):'Nenhuma');
+  sm('xml-m-div',(divNCM||divICMS)>0?(divNCM.toLocaleString('pt-BR')+' NCM · '+divICMS.toLocaleString('pt-BR')+' ICMS'):'Nenhuma');
+
+  // Resumo alertas
   let resumo='';
   if(semXML>0){
-    const temChave=Object.values(erpPorNF||{}).some(n=>n.chave_erp&&n.chave_erp.length===44);
-    const msgChave=!temChave
-      ? ' <strong>Atenção:</strong> O arquivo de compras não contém o campo CHAVE_NFE. Use a <strong>Query 6</strong> do arquivo SQL para exportar com a chave de 44 dígitos, que é o critério principal de cruzamento.'
-      : ' Verifique se todos os XMLs do período foram baixados da SEFAZ, ou se algumas notas foram canceladas pelo fornecedor.';
-    resumo+='<div class="alert al-warn"><i class="ti ti-alert-triangle al-i"></i><div><strong>'+semXML+' NFs do ERP sem XML correspondente.</strong>'+msgChave+'</div></div>';
+    const msgChave=!erpTemChave
+      ?' <strong>Atenção:</strong> Use a <strong>Query 6</strong> do SQL para exportar com CHAVE_NFE.'
+      :' Verifique se todos os XMLs foram baixados da SEFAZ ou se foram cancelados.';
+    resumo+='<div class="alert al-warn"><i class="ti ti-alert-triangle al-i"></i><div><strong>'+semXML+' NFs do ERP sem XML.</strong>'+msgChave+'</div></div>';
   }
-  if(Math.abs(totalDiff)>0.05){const fav=totalDiff<0;resumo+='<div class="alert '+(fav?'al-ok':'al-warn')+'"><i class="ti ti-'+(fav?'circle-check':'alert-triangle')+' al-i"></i><div><strong>Diferença total de ICMS: '+brl(Math.abs(totalDiff))+'.</strong> '+(fav?'O ERP registrou mais crédito que o XML indica — possível crédito a maior.':'O XML tem mais ICMS que o ERP — possível crédito não aproveitado de '+brl(totalDiff)+'.')+'</div></div>';}
-  if(!resumo&&semXML===0&&(divNCM+divICMS)===0)resumo='<div class="alert al-ok"><i class="ti ti-circle-check al-i"></i><div><strong>Tudo conferido!</strong> Todas as NFs têm XML e sem divergências.</div></div>';
+  if(Math.abs(totalDiff)>0.05){
+    const fav=totalDiff<0;
+    resumo+='<div class="alert '+(fav?'al-warn':'al-ok')+'"><i class="ti ti-'+(fav?'alert-triangle':'circle-check')+' al-i"></i><div>'
+      +'<strong>Diferença total de ICMS: '+brl(Math.abs(totalDiff))+'.</strong> '
+      +(fav?'O ERP registrou mais crédito que os XMLs — possível crédito a maior. Analise os itens divergentes.':'O XML tem mais ICMS que o ERP — possível crédito não aproveitado de '+brl(Math.abs(totalDiff))+'.')
+      +'</div></div>';
+  }
+  if(!resumo&&semXML===0&&divNCM===0&&divICMS===0)
+    resumo='<div class="alert al-ok"><i class="ti ti-circle-check al-i"></i><div><strong>Tudo conferido!</strong> Sem divergências.</div></div>';
   const xr=G('xml-resumo');if(xr)xr.innerHTML=resumo;
+
   const fornecedores=[...new Set(XML_ROWS.map(r=>r.razao).filter(Boolean))].sort();
-  const xfs=G('xml-fl-forn-sel');if(xfs)xfs.innerHTML='<option value="">Todos os fornecedores</option>'+fornecedores.map(f=>'<option value="'+f+'">'+f+'</option>').join('');
-  setProg('xml',100,'Concluído! '+total+' NFs processadas'+(errosXML>0?' ('+errosXML+' XMLs com erro)':'')+'.');
+  const xfs=G('xml-fl-forn-sel');
+  if(xfs)xfs.innerHTML='<option value="">Todos os fornecedores</option>'+fornecedores.map(f=>'<option value="'+f+'">'+f+'</option>').join('');
+
+  setProg('xml',100,'');
+  const ptEl=G('pt-xml');if(ptEl)ptEl.textContent='Concluído! '+totalItens.toLocaleString('pt-BR')+' itens processados'+(errosXML>0?' ('+errosXML+' XMLs com erro)':'.')+'.';
   setTimeout(function(){const pw=G('pw-xml');if(pw)pw.style.display='none';},800);
-  setMsg('xml','✓ '+comXML+' NFs com XML · '+semXML+' sem XML · '+(divNCM+divICMS)+' divergências',(semXML>0||(divNCM+divICMS)>0)?'var(--amber)':'var(--green)');
+  setMsg('xml',
+    '✓ '+nfsComXML+' NFs com XML · '+semXML+' sem XML · '+(divNCM+divICMS).toLocaleString('pt-BR')+' divergências',
+    (semXML>0||(divNCM+divICMS)>0)?'var(--amber)':'var(--green)');
   const xok=G('xml-ok'),xemp=G('xml-empty');if(xok)xok.style.display='block';if(xemp)xemp.style.display='none';
   pXML=1;renderXML();
 }
@@ -1595,25 +1726,64 @@ function renderXML(){
   const filtro=(G('xml-fl-tipo')||{}).value||'';
   const forn=(G('xml-fl-forn-sel')||{}).value||'';
   const busca=((G('xml-fl-busca')||{}).value||'').toLowerCase();
+
   const f=XML_ROWS.filter(function(r){
     if(forn&&r.razao!==forn)return false;
-    if(busca&&!(r.razao+r.nfe_erp+r.chave_erp).toLowerCase().includes(busca))return false;
+    if(busca&&!(r.razao+r.nfe_erp+r.chave_erp+r.xProd+r.ean_xml).toLowerCase().includes(busca))return false;
     if(filtro==='ok')return r.status==='ok';
     if(filtro==='sem_xml')return r.status==='sem_xml';
-    if(filtro==='divergente')return r.status==='divergente';
+    if(filtro==='divergente')return r.status==='divergente'||r.status==='sem_xml_item';
     if(filtro==='div_ncm')return r.div_ncm;
-    if(filtro==='div_icms')return r.div_icms;
+    if(filtro==='div_icms')return r.div_icms&&r.status!=='sem_xml';
     return true;
   });
+
   const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pXML>pgs)pXML=1;const sl=f.slice((pXML-1)*PG,pXML*PG);
+
+  const gb=function(r){
+    if(r.status==='ok')return '<span class="badge" style="background:var(--green-lt);color:var(--green)">✓ OK</span>';
+    if(r.status==='sem_xml')return '<span class="badge b-amber">⚠ Sem XML</span>';
+    if(r.status==='sem_xml_item')return '<span class="badge b-amber">⚠ Item s/ XML</span>';
+    const bs=[];
+    if(r.div_ncm)bs.push('<span class="badge b-red">≠ NCM</span>');
+    if(r.div_icms)bs.push('<span class="badge b-amber">≠ ICMS</span>');
+    if(r.div_aliq)bs.push('<span class="badge b-blue">≠ Alíq.</span>');
+    return bs.join(' ');
+  };
+
   const tb=G('xml-tb');
   if(tb)tb.innerHTML=sl.map(function(r){
-    const gb=r.status==='ok'?'<span class="badge" style="background:var(--green-lt);color:var(--green)">✓ OK</span>':r.status==='sem_xml'?'<span class="badge b-amber">⚠ Sem XML</span>':[r.div_ncm?'<span class="badge b-red">≠ NCM</span>':'',r.div_icms?'<span class="badge b-amber">≠ ICMS</span>':'',r.div_aliq?'<span class="badge b-blue">≠ Alíq.</span>':''].filter(Boolean).join(' ');
-    const ds=Math.abs(r.diff_icms)<0.05?'color:var(--text3)':r.diff_icms<0?'color:var(--green);font-weight:600':'color:var(--red);font-weight:600';
-    return '<tr><td><span class="badge b-gray">L'+r.empresa+'</span></td><td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:11px" title="'+r.razao+'">'+r.razao+'</td><td style="font-family:monospace;font-size:10px;color:var(--text3)" title="'+r.chave_erp+'">'+(r.chave_erp?r.chave_erp.slice(-8)+'...':'—')+'</td><td class="td-dim">'+fmtD(r.emissao_erp)+'</td><td class="td-r">'+r.itens_erp+'</td><td style="'+(r.div_ncm?'color:var(--red);font-weight:700':'')+'">'+( r.ncm_xml||'—')+'</td><td style="'+(r.div_ncm?'color:var(--red)':'')+'">'+( r.ncm_erp||'—')+'</td><td class="td-r">'+(r.aliq_xml?r.aliq_xml+'%':'—')+'</td><td class="td-r">'+(r.aliq_erp?numAliq(r.aliq_erp)+'%':'—')+'</td><td class="td-r">'+(r.icms_xml?bS(r.icms_xml):'—')+'</td><td class="td-r">'+bS(r.icms_erp)+'</td><td style="text-align:right;'+ds+'">'+(Math.abs(r.diff_icms)<0.05&&r.status!=='sem_xml'?'—':(r.diff_icms>0?'+':'')+bS(r.diff_icms))+'</td><td>'+gb+'</td></tr>';
+    const ds=Math.abs(r.diff_icms)<0.05?'color:var(--text3)':r.diff_icms<0?'color:var(--red);font-weight:600':'color:var(--green);font-weight:600';
+    const ncmDiv=r.div_ncm?'color:var(--red);font-weight:700':'';
+    return '<tr>'
+      +'<td><span class="badge b-gray">L'+r.empresa+'</span></td>'
+      +'<td style="max-width:110px;overflow:hidden;text-overflow:ellipsis;font-size:11px" title="'+r.razao+'">'+r.razao+'</td>'
+      +'<td style="font-family:monospace;font-size:10px;color:var(--text3)" title="'+r.chave_erp+'">'+(r.chave_erp?r.chave_erp.slice(-8)+'...':'—')+'</td>'
+      +'<td class="td-dim">'+fmtD(r.emissao_erp)+'</td>'
+      +'<td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;font-size:11px" title="'+(r.xProd||r.desc_erp)+'">'+(r.xProd||r.desc_erp||'—')+'</td>'
+      +'<td style="font-size:11px;color:var(--text3)">'+(r.ean_xml||r.ean_erp||'—')+'</td>'
+      +'<td style="'+ncmDiv+'">'+(r.ncm_xml||'—')+'</td>'
+      +'<td style="'+ncmDiv+'">'+(r.ncm_erp||'—')+'</td>'
+      +'<td class="td-r">'+(r.aliq_xml?r.aliq_xml+'%':'—')+'</td>'
+      +'<td class="td-r">'+(r.aliq_erp?numAliq(r.aliq_erp)+'%':'—')+'</td>'
+      +'<td class="td-r">'+(r.icms_xml?bS(r.icms_xml):'—')+'</td>'
+      +'<td class="td-r">'+bS(r.icms_erp)+'</td>'
+      +'<td style="text-align:right;'+ds+'">'+(Math.abs(r.diff_icms)<0.05?'—':(r.diff_icms>0?'+':'')+bS(r.diff_icms))+'</td>'
+      +'<td>'+gb(r)+'</td>'
+      +'</tr>';
   }).join('');
-  const sXML=f.reduce((s,r)=>s+r.icms_xml,0),sERP=f.reduce((s,r)=>s+r.icms_erp,0),sDiff=f.reduce((s,r)=>s+r.diff_icms,0);
-  const tf=G('xml-tf');if(tf)tf.innerHTML='<tr><td colspan="9">Total ('+tot.toLocaleString('pt-BR')+' NFs)</td><td class="td-r">'+bS(sXML)+'</td><td class="td-r">'+bS(sERP)+'</td><td style="text-align:right;font-weight:700;color:'+(Math.abs(sDiff)<0.05?'var(--text3)':sDiff<0?'var(--green)':'var(--red)')+'">'+( Math.abs(sDiff)<0.05?'—':(sDiff>0?'+':'')+bS(sDiff))+'</td><td></td></tr>';
+
+  // Totais
+  const sXML=f.reduce((s,r)=>s+r.icms_xml,0);
+  const sERP=f.reduce((s,r)=>s+r.icms_erp,0);
+  const sDiff=f.reduce((s,r)=>s+r.diff_icms,0);
+  const tf=G('xml-tf');
+  if(tf)tf.innerHTML='<tr><td colspan="10">Total ('+tot.toLocaleString('pt-BR')+' itens)</td>'
+    +'<td class="td-r">'+bS(sXML)+'</td>'
+    +'<td class="td-r">'+bS(sERP)+'</td>'
+    +'<td style="text-align:right;font-weight:700;color:'+(Math.abs(sDiff)<0.05?'var(--text3)':sDiff<0?'var(--red)':'var(--green)')+'">'+
+    (Math.abs(sDiff)<0.05?'—':(sDiff>0?'+':'')+bS(sDiff))+'</td><td></td></tr>';
+
   const pi=G('xml-pi');if(pi)pi.textContent=((pXML-1)*PG+1)+'–'+Math.min(pXML*PG,tot)+' de '+tot.toLocaleString('pt-BR');
   const pc=G('xml-pc');if(pc)pc.textContent=pXML+'/'+pgs;
   const pv=G('xml-pv');if(pv)pv.disabled=pXML<=1;
@@ -1627,7 +1797,7 @@ async function consultarTIPI(){
   if(!ncms.length){alert('Nenhum NCM disponível para consultar.');if(btn)btn.disabled=false;return;}
   const res=G('xml-tipi-res'),body=G('xml-tipi-body');
   if(res)res.style.display='block';
-  if(body)body.innerHTML='<div style="padding:.5rem;font-size:12px;color:var(--text3)">Consultando '+ncms.length+' NCMs na BrasilAPI...</div>';
+  if(body)body.innerHTML='<div style="padding:.5rem;font-size:12px;color:var(--text3)">Consultando '+ncms.length+' NCMs...</div>';
   const results=[];
   for(let i=0;i<ncms.length;i++){
     const ncm=ncms[i];
@@ -1635,7 +1805,12 @@ async function consultarTIPI(){
     catch(e){results.push({ncm,desc:'Erro na consulta',aliq:'—',ok:false});}
     if(body)body.innerHTML='<div style="padding:.5rem;font-size:12px;color:var(--text3)">Consultando '+(i+1)+'/'+ncms.length+': '+ncm+'...</div>';
   }
-  if(body)body.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>NCM</th><th>Descrição TIPI</th><th class="td-r">IPI TIPI</th><th class="td-r">NFs</th></tr></thead><tbody>'+results.map(function(r){const count=XML_ROWS.filter(x=>(x.ncm_xml||'').replace(/[^0-9]/g,'')==r.ncm).length;return '<tr><td style="font-family:monospace;font-weight:600">'+r.ncm+'</td><td style="font-size:12px;color:'+(r.ok?'var(--text)':'var(--red)')+'">'+r.desc+'</td><td class="td-r">'+(r.aliq!=='—'?r.aliq+'%':'—')+'</td><td class="td-r">'+count+'</td></tr>';}).join('')+'</tbody></table></div><div style="font-size:10px;color:var(--text3);margin-top:.5rem">Fonte: BrasilAPI / Receita Federal. IPI ≠ ICMS. Use a descrição para confirmar a classificação do produto.</div>';
+  if(body)body.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>NCM</th><th>Descrição TIPI</th><th class="td-r">IPI</th><th class="td-r">Itens</th></tr></thead><tbody>'
+    +results.map(function(r){
+      const count=XML_ROWS.filter(x=>(x.ncm_xml||'').replace(/[^0-9]/g,'')==r.ncm).length;
+      return '<tr><td style="font-family:monospace;font-weight:600">'+r.ncm+'</td><td style="font-size:12px;color:'+(r.ok?'var(--text)':'var(--red)')+'">'+r.desc+'</td><td class="td-r">'+(r.aliq!=='—'?r.aliq+'%':'—')+'</td><td class="td-r">'+count+'</td></tr>';
+    }).join('')+'</tbody></table></div>'
+    +'<div style="font-size:10px;color:var(--text3);margin-top:.5rem">Fonte: BrasilAPI / Receita Federal. IPI ≠ ICMS.</div>';
   if(btn)btn.disabled=false;
 }
 
@@ -1676,7 +1851,55 @@ function _exportarLjExcel(){var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);
 function exportarDashExcel(){if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_exportarDashExcel();document.head.appendChild(s);}else _exportarDashExcel();}
 function _exportarDashExcel(){var saldo=parseFloat((G('ap-saldo')||{}).value)||0;var tCred=E_ROWS.reduce((s,r)=>s+r.icms,0);var tCupICMS=S_CUP.reduce((s,r)=>s+r.icms,0),tNfeICMS=S_NFE.reduce((s,r)=>s+r.icms,0);var tDevRD=S_DEV.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),tDevRC=S_DEV.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0),tDevSD=S_DEV.filter(r=>r.impacto==='SOMA_DEBITO').reduce((s,r)=>s+r.icms,0);var credTotal=tCred+saldo-tDevRC,tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD;var aPagar=Math.max(0,tDeb-credTotal),sCr=Math.max(0,credTotal-tDeb),tFat=S_CUP.reduce((s,r)=>s+r.fat,0)+S_NFE.reduce((s,r)=>s+r.total,0);var wb=XLSX.utils.book_new();var kR=[['DASHBOARD THALIA PERFUMARIA'],[''],['Faturamento total',+tFat.toFixed(2)],['Credito liquido',+credTotal.toFixed(2)],['Debito liquido',+tDeb.toFixed(2)],['ICMS a pagar',+aPagar.toFixed(2)],['Taxa efetiva (%)',tFat>0?+((aPagar/tFat)*100).toFixed(2):0],['Aproveitamento (%)',tDeb>0?+((credTotal/tDeb)*100).toFixed(1):0]];var wsK=XLSX.utils.aoa_to_sheet(kR);wsK['!cols']=[{wch:35},{wch:20}];XLSX.utils.book_append_sheet(wb,wsK,'KPIs');var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var lR=[['Loja','Faturamento','Credito Liq','Debito Liq','Dev Reduz Deb','Dev Reduz Cred','ICMS a Pagar','Saldo Credor','% Deb/Fat']];lojas.forEach(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);var pagar=Math.max(0,(db-dRD)-(c-dRC)),sc=Math.max(0,(c-dRC)-(db-dRD));var pct=fat>0?((db-dRD)/fat*100):0;lR.push(['Loja '+l,+fat.toFixed(2),+(c-dRC).toFixed(2),+(db-dRD).toFixed(2),+dRD.toFixed(2),+dRC.toFixed(2),+pagar.toFixed(2),+sc.toFixed(2),+pct.toFixed(2)]);});var wsL=XLSX.utils.aoa_to_sheet(lR);wsL['!cols']=[{wch:10},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:12}];XLSX.utils.book_append_sheet(wb,wsL,'Por Loja');var d=new Date();XLSX.writeFile(wb,'Thalia_ICMS_Dashboard_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');}
 function exportarXMLExcel(){if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_exportarXMLExcel();document.head.appendChild(s);}else _exportarXMLExcel();}
-function _exportarXMLExcel(){var wb=XLSX.utils.book_new();var rows=[['Grupo','Loja','Fornecedor','Chave NF-e','NF','Emissão','Itens','NCM XML','NCM ERP','Aliq.XML%','Aliq.ERP%','ICMS XML','ICMS ERP','Diferença','Div.NCM','Div.ICMS']];XML_ROWS.forEach(function(r){rows.push([r.status==='ok'?'OK':r.status==='sem_xml'?'Sem XML':'Divergente','Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.itens_erp,r.ncm_xml,r.ncm_erp,r.aliq_xml,numAliq(r.aliq_erp),+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2),r.div_ncm?'SIM':'NÃO',r.div_icms?'SIM':'NÃO']);});var ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:12},{wch:8},{wch:30},{wch:46},{wch:10},{wch:12},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:14},{wch:14},{wch:14},{wch:10},{wch:10}];XLSX.utils.book_append_sheet(wb,ws,'Conferência');var sem=XML_ROWS.filter(r=>r.status==='sem_xml');var r2=[['Loja','Fornecedor','Chave NF-e','NF','Emissão','Itens','ICMS ERP']];sem.forEach(function(r){r2.push(['Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.itens_erp,+r.icms_erp.toFixed(2)]);});var ws2=XLSX.utils.aoa_to_sheet(r2);XLSX.utils.book_append_sheet(wb,ws2,'Sem XML ('+sem.length+')');var divs=XML_ROWS.filter(r=>r.status==='divergente');var r3=[['Loja','Fornecedor','NCM XML','NCM ERP','ICMS XML','ICMS ERP','Diferença']];divs.forEach(function(r){r3.push(['Loja '+r.empresa,r.razao,r.ncm_xml,r.ncm_erp,+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2)]);});var ws3=XLSX.utils.aoa_to_sheet(r3);XLSX.utils.book_append_sheet(wb,ws3,'Divergências ('+divs.length+')');var d=new Date();XLSX.writeFile(wb,'Thalia_ConferenciaXML_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');}
+function _exportarXMLExcel(){
+  var wb=XLSX.utils.book_new();
+  // Aba 1: Conferência completa por produto
+  var rows=[['Grupo','Loja','Fornecedor','Chave NF-e','NF','Emissão','Produto (XML)','EAN','NCM XML','NCM ERP','Aliq.XML%','Aliq.ERP%','ICMS XML','ICMS ERP','Diferença ICMS','Div.NCM','Div.ICMS']];
+  XML_ROWS.forEach(function(r){
+    var grupo=r.status==='ok'?'OK':r.status==='sem_xml'?'NF Sem XML':r.status==='sem_xml_item'?'Item s/ XML':'Divergente';
+    rows.push([grupo,'Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.xProd||r.desc_erp,r.ean_xml||r.ean_erp,r.ncm_xml,r.ncm_erp,r.aliq_xml,numAliq(r.aliq_erp),+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2),r.div_ncm?'SIM':'NÃO',r.div_icms?'SIM':'NÃO']);
+  });
+  var ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:14},{wch:8},{wch:30},{wch:46},{wch:10},{wch:12},{wch:30},{wch:14},{wch:12},{wch:12},{wch:10},{wch:10},{wch:14},{wch:14},{wch:14},{wch:10},{wch:10}];
+  XLSX.utils.book_append_sheet(wb,ws,'Conferência por Produto');
+  // Aba 2: Divergências ordenadas por maior diferença
+  var divs=XML_ROWS.filter(r=>r.status==='divergente'||r.status==='sem_xml_item').slice().sort((a,b)=>Math.abs(b.diff_icms)-Math.abs(a.diff_icms));
+  var r2=[['Loja','Fornecedor','Produto','EAN','NCM XML','NCM ERP','Aliq.XML%','Aliq.ERP%','ICMS XML','ICMS ERP','Diferença','Tipo']];
+  divs.forEach(function(r){
+    var tipos=[];
+    if(r.div_ncm)tipos.push('NCM diverge');
+    if(r.div_icms)tipos.push('ICMS diverge');
+    if(r.div_aliq)tipos.push('Alíquota diverge');
+    if(r.status==='sem_xml_item')tipos.push('Item sem XML');
+    r2.push(['Loja '+r.empresa,r.razao,r.xProd||r.desc_erp,r.ean_xml||r.ean_erp,r.ncm_xml,r.ncm_erp,r.aliq_xml,numAliq(r.aliq_erp),+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2),tipos.join(' | ')]);
+  });
+  var ws2=XLSX.utils.aoa_to_sheet(r2);
+  ws2['!cols']=[{wch:8},{wch:30},{wch:30},{wch:14},{wch:12},{wch:12},{wch:10},{wch:10},{wch:14},{wch:14},{wch:14},{wch:30}];
+  XLSX.utils.book_append_sheet(wb,ws2,'Divergências ('+divs.length+')');
+  // Aba 3: NFs sem XML
+  var sem=XML_ROWS.filter(r=>r.status==='sem_xml');
+  var r3=[['Loja','Fornecedor','Chave NF-e','NF','Emissão','ICMS ERP']];
+  sem.forEach(function(r){r3.push(['Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),+r.icms_erp.toFixed(2)]);});
+  var ws3=XLSX.utils.aoa_to_sheet(r3);
+  ws3['!cols']=[{wch:8},{wch:30},{wch:46},{wch:10},{wch:12},{wch:14}];
+  XLSX.utils.book_append_sheet(wb,ws3,'Sem XML ('+sem.length+' NFs)');
+  // Aba 4: Resumo por NCM (divergências de NCM)
+  var ncmMap={};
+  XML_ROWS.filter(r=>r.div_ncm).forEach(function(r){
+    var k=(r.ncm_xml||'')+'→'+(r.ncm_erp||'');
+    if(!ncmMap[k])ncmMap[k]={ncm_xml:r.ncm_xml,ncm_erp:r.ncm_erp,count:0,diff:0};
+    ncmMap[k].count++;ncmMap[k].diff+=r.diff_icms;
+  });
+  var r4=[['NCM XML','NCM ERP','Qtd. Itens','Diferença ICMS Total']];
+  Object.values(ncmMap).sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff)).forEach(function(v){
+    r4.push([v.ncm_xml,v.ncm_erp,v.count,+v.diff.toFixed(2)]);
+  });
+  var ws4=XLSX.utils.aoa_to_sheet(r4);
+  ws4['!cols']=[{wch:14},{wch:14},{wch:12},{wch:20}];
+  XLSX.utils.book_append_sheet(wb,ws4,'Divergências NCM');
+  var d=new Date();
+  XLSX.writeFile(wb,'Thalia_ConferenciaXML_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');
+}
 function limparE(){E_ROWS=[];E_NOTAS=[];const eo=G('e-ok');if(eo)eo.style.display='none';setMsg('e','');const fi=G('fi-e');if(fi)fi.value='';atualizarHd();}
 function limparS(){S_CUP=[];S_NFE=[];const so=G('s-ok'),dm=G('dev-metrics');if(so)so.style.display='none';if(dm)dm.style.display='none';setMsg('cup','');setMsg('nfe','');const fc=G('fi-cup'),fn=G('fi-nfe');if(fc)fc.value='';if(fn)fn.value='';atualizarHd();}
 
