@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 :root{
   --thalia-teal:#00B5A3;--thalia-teal-dk:#007A6E;--thalia-teal-lt:#E6F9F7;
@@ -516,8 +517,18 @@ input[type=number]:focus,select.fi:focus{outline:none;border-color:var(--thalia-
   <div class="card">
     <div class="card-t"><i class="ti ti-upload"></i>Importar XMLs das NF-e de compra</div>
     <div class="upload-area">
-      <div class="upload-label"><i class="ti ti-file-code"></i>Selecione os arquivos XML (múltiplos permitidos)</div>
-      <input type="file" id="fi-xml" accept=".xml" multiple>
+      <div class="upload-label"><i class="ti ti-file-code"></i>Selecione os arquivos XML ou um arquivo ZIP com os XMLs</div>
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.4rem">
+        <label style="display:flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid var(--border);border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text2);background:var(--bg2);transition:all .15s" onmouseover="this.style.borderColor='var(--thalia-teal)';this.style.color='var(--thalia-teal)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text2)'">
+          <i class="ti ti-file-code" style="font-size:14px"></i> Selecionar XMLs
+          <input type="file" id="fi-xml" accept=".xml" multiple style="display:none">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid var(--border);border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text2);background:var(--bg2);transition:all .15s" onmouseover="this.style.borderColor='var(--thalia-teal)';this.style.color='var(--thalia-teal)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text2)'">
+          <i class="ti ti-file-zip" style="font-size:14px"></i> Selecionar ZIP
+          <input type="file" id="fi-zip" accept=".zip" style="display:none">
+        </label>
+      </div>
+      <div id="xml-drop-hint" style="font-size:11px;color:var(--text3);margin-top:.5rem">Suporte a múltiplos XMLs ou um arquivo ZIP contendo XMLs de NF-e de compra</div>
     </div>
     <div id="pw-xml" style="display:none;margin-top:8px">
       <div class="prog-bar"><div class="prog-fill" id="pb-xml" style="width:0%;background:var(--blue)"></div></div>
@@ -732,6 +743,7 @@ function bindAll(){
   const fi_nfe=G('fi-nfe');if(fi_nfe&&!fi_nfe._b){fi_nfe._b=true;fi_nfe.onchange=function(){if(this.files[0])onFile('nfe',this.files[0]);};}
   const fi_dev=G('fi-dev');if(fi_dev&&!fi_dev._b){fi_dev._b=true;fi_dev.onchange=function(){if(this.files[0])onFile('dev',this.files[0]);};}
   const fi_xml=G('fi-xml');if(fi_xml&&!fi_xml._b){fi_xml._b=true;fi_xml.onchange=function(){if(this.files.length)carregarXMLs(this.files);};}
+  const fi_zip=G('fi-zip');if(fi_zip&&!fi_zip._b){fi_zip._b=true;fi_zip.onchange=function(){if(this.files[0])carregarZIP(this.files[0]);};}
 }
 document.addEventListener('DOMContentLoaded',bindAll);
 setTimeout(bindAll,500);
@@ -1358,6 +1370,69 @@ function carregarXMLs(files){
   });
 }
 
+// ── CARREGAR ZIP DE XMLs ───────────────────────────────────────
+async function carregarZIP(file){
+  if(!window.JSZip){
+    // Carregar JSZip dinamicamente se não estiver disponível
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      s.onload=res;s.onerror=rej;
+      document.head.appendChild(s);
+    });
+  }
+  XML_MAP_CHAVE={};
+  const pw=G('pw-xml');if(pw)pw.style.display='block';
+  const ok=G('xml-ok'),emp=G('xml-empty');
+  if(ok)ok.style.display='none';if(emp)emp.style.display='none';
+  setMsg('xml','');
+  setProg('xml',5,'Lendo arquivo ZIP...');
+
+  try{
+    const ptEl=G('pt-xml');
+    const zip=await JSZip.loadAsync(file);
+
+    // Listar apenas arquivos XML dentro do ZIP (ignorar pastas e outros tipos)
+    const xmlFiles=[];
+    zip.forEach(function(relativePath,zipEntry){
+      if(!zipEntry.dir && relativePath.toLowerCase().endsWith('.xml')){
+        xmlFiles.push({path:relativePath,entry:zipEntry});
+      }
+    });
+
+    if(!xmlFiles.length){
+      setMsg('xml','Nenhum arquivo XML encontrado dentro do ZIP.','var(--red)');
+      if(pw)pw.style.display='none';
+      return;
+    }
+
+    if(ptEl)ptEl.textContent='ZIP carregado. Encontrados '+xmlFiles.length+' XMLs. Processando...';
+    setProg('xml',20,'Extraindo XMLs...');
+
+    let done=0,erros=0;
+    for(const {path,entry} of xmlFiles){
+      try{
+        const content=await entry.async('string');
+        const parser=new DOMParser();
+        const doc=parser.parseFromString(content,'text/xml');
+        const itens=extrairDadosXML(doc);
+        itens.forEach(function(it){if(it.chave)XML_MAP_CHAVE[it.chave]=it;});
+      }catch(ex){erros++;}
+      done++;
+      const pct=20+Math.round((done/xmlFiles.length)*70);
+      setProg('xml',pct,'');
+      if(ptEl)ptEl.textContent='Extraindo '+done+' de '+xmlFiles.length+' XMLs...';
+    }
+
+    if(ptEl)ptEl.textContent='XMLs extraídos. Cruzando com ERP...';
+    setTimeout(function(){cruzarERPcomXML(erros);},100);
+
+  }catch(err){
+    setMsg('xml','Erro ao ler ZIP: '+err.message,'var(--red)');
+    const pw2=G('pw-xml');if(pw2)pw2.style.display='none';
+  }
+}
+
 function checkXMLDone(total,done,erros){
   if(done<total)return;
   const ptEl=G('pt-xml');if(ptEl)ptEl.textContent='XMLs carregados. Cruzando com ERP...';
@@ -1506,7 +1581,7 @@ function _exportarXMLExcel(){
   XLSX.utils.book_append_sheet(wb,ws3,'Divergências ('+divs.length+')');
   const d=new Date();XLSX.writeFile(wb,'Thalia_ConferenciaXML_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');
 }
-function limparXML(){XML_ROWS=[];XML_MAP_CHAVE={};const ok=G('xml-ok'),emp=G('xml-empty'),tr=G('xml-tipi-res'),xr=G('xml-resumo');if(ok)ok.style.display='none';if(emp)emp.style.display='block';if(tr)tr.style.display='none';if(xr)xr.innerHTML='';setMsg('xml','');const fi=G('fi-xml');if(fi)fi.value='';}
+function limparXML(){XML_ROWS=[];XML_MAP_CHAVE={};const ok=G('xml-ok'),emp=G('xml-empty'),tr=G('xml-tipi-res'),xr=G('xml-resumo');if(ok)ok.style.display='none';if(emp)emp.style.display='block';if(tr)tr.style.display='none';if(xr)xr.innerHTML='';setMsg('xml','');const fi=G('fi-xml');if(fi)fi.value='';const fz=G('fi-zip');if(fz)fz.value='';}
 
 // ── EXPORTAR PDF / EXCEL (stubs — funções completas embutidas acima) ──
 function gerarInsightsPDF(d){var tFat=d.tFat||0,tCred=d.tCred||0,saldo=d.saldo||0,tDevRC=d.tDevRC||0,credTotal=d.credTotal||0,tCupICMS=d.tCupICMS||0,tNfeICMS=d.tNfeICMS||0,tDevRD=d.tDevRD||0,tDevSD=d.tDevSD||0,tDeb=d.tDeb||0,aPagar=d.aPagar||0,sCr=d.sCr||0,dadosLoja=d.dadosLoja||[],tCupons=d.tCupons||0,tNfes=d.tNfes||0,tDevs=d.tDevs||0,tNfEntradas=d.tNfEntradas||0;var taxa=tFat>0?(aPagar/tFat*100):0;var aprov=tDeb>0?(credTotal/tDeb*100):0;var top=dadosLoja.length>0?dadosLoja[0]:null;var items=[];items.push({cor:'#1B4FD8',t:'Origem dos dados',x:'Esta apura\u00e7\u00e3o consolida <strong>'+tNfEntradas+' NFs de compras</strong> (<code>NF_COMPRA/NF_COMPRA_PRODUTOS</code>), <strong>'+tCupons.toLocaleString('pt-BR')+' cupons</strong> (<code>PDV_ITENS</code>), <strong>'+tNfes+' NF-e de venda</strong> (<code>NF_FATURAMENTO/NF_FATURAMENTO_TOTAIS</code>) e <strong>'+tDevs+' devolu\u00e7\u00f5es</strong> (<code>NF_COMPRA_DEVOLUCOES/NF_COMPRA_DEVOLUCOES_PRODUTOS</code>). Cancelamentos exclu\u00eddos via <code>NFE_CANCELAMENTOS (STATUS=4)</code>.'});var xc='Cr\u00e9dito bruto <strong>'+brl(tCred)+'</strong> = somat\u00f3rio de <code>GTE_ICMS_VALOR</code> (CFOPs 1.102/1.403/2.102/2.403). ';if(saldo>0)xc+='Saldo anterior: <strong>'+brl(saldo)+'</strong>. ';if(tDevRC>0)xc+='Estorno 5202/6202: <strong>(\u2212'+brl(tDevRC)+')</strong>. ';xc+='Cr\u00e9dito l\u00edquido: <strong>'+brl(credTotal)+'</strong>.';items.push({cor:'#0D7A5F',t:'Como foi calculado o cr\u00e9dito ICMS',x:xc});var xd='D\u00e9bito cupons: <strong>'+brl(tCupICMS)+'</strong>. D\u00e9bito NF-e: <strong>'+brl(tNfeICMS)+'</strong>. ';if(tDevRD>0)xd+='Dev 5411/6411: <strong>(\u2212'+brl(tDevRD)+')</strong>. ';xd+='D\u00e9bito l\u00edquido: <strong>'+brl(tDeb)+'</strong>.';items.push({cor:'#D62B2B',t:'Como foi calculado o d\u00e9bito ICMS',x:xd});if(aPagar>0){items.push({cor:'#D62B2B',t:'Resultado: ICMS a pagar',x:'<strong>'+brl(tDeb)+'</strong> \u2212 <strong>'+brl(credTotal)+'</strong> = <strong>'+brl(aPagar)+' a pagar</strong>. Taxa efetiva: <strong>'+taxa.toFixed(2)+'%</strong>.'});}else{items.push({cor:'#0D7A5F',t:'Resultado: saldo credor',x:'<strong>Saldo credor de '+brl(sCr)+'</strong> transferido para o pr\u00f3ximo per\u00edodo.'});}items.push({cor:'#1B4FD8',t:'Aproveitamento do cr\u00e9dito',x:'Cr\u00e9dito cobre <strong>'+aprov.toFixed(1)+'%</strong> do d\u00e9bito.'+(aprov<40?' \u00cdndice baixo esperado nos primeiros meses p\u00f3s-ST.':'')});if(top&&top.pagar>0&&dadosLoja.length>1){var pct2=aPagar>0?(top.pagar/aPagar*100):0;items.push({cor:'#92400E',t:'Destaque: Loja '+top.l,x:'Loja '+top.l+' concentra <strong>'+pct2.toFixed(1)+'%</strong> do ICMS ('+brl(top.pagar)+'). Taxa: '+top.pct.toFixed(2)+'%.'});}var out='<style>code{background:#F1F5F9;padding:1px 5px;border-radius:3px;font-size:10px;font-family:monospace;color:#1B4FD8}</style>';items.forEach(function(it){out+='<div style="display:flex;gap:.85rem;padding:.85rem 0;border-bottom:1px solid #E2E8F0"><div style="width:4px;background:'+it.cor+';border-radius:2px;flex-shrink:0;min-height:40px"></div><div><div style="font-size:11px;font-weight:700;color:#0D1117;margin-bottom:4px">'+it.t+'</div><div style="font-size:11px;color:#4A5568;line-height:1.7">'+it.x+'</div></div></div>';});out+='<div style="font-size:9px;color:#94A3B8;border-top:1px solid #E2E8F0;padding-top:.6rem;margin-top:.75rem"><strong>Fontes:</strong> NF_COMPRA/NF_COMPRA_PRODUTOS | PDV_ITENS | NF_FATURAMENTO/NF_FATURAMENTO_TOTAIS | NF_COMPRA_DEVOLUCOES | NFE_CANCELAMENTOS(STATUS=4)</div>';return out;}
