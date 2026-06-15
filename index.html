@@ -438,6 +438,62 @@ input[type=number]:focus,select.fi:focus{outline:none;border-color:var(--thalia-
 </div>
 
 
+
+<!-- DASHBOARD -->
+<div id="pg-dashboard" class="page">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border)">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <h2 style="font-size:22px;font-weight:700;color:var(--text);letter-spacing:-.3px">Dashboard</h2>
+      <span class="badge-type bt-a">Insights</span>
+    </div>
+    <div id="dash-export-bar" style="display:none;gap:8px;align-items:center">
+      <span style="font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text3);margin-right:4px">Exportar:</span>
+      <button class="btn" onclick="exportarDashPDF()" style="border-color:var(--red);color:var(--red);font-size:12px"><i class="ti ti-file-type-pdf"></i>PDF</button>
+      <button class="btn" onclick="exportarDashExcel()" style="border-color:var(--green);color:var(--green);font-size:12px"><i class="ti ti-file-spreadsheet"></i>Excel</button>
+    </div>
+  </div>
+  <div id="dash-empty" class="empty"><i class="ti ti-chart-bar"></i><p>Importe os arquivos de entradas e saídas para ver o dashboard</p></div>
+  <div id="dash-ok" style="display:none">
+    <div class="metrics c4" style="margin-bottom:1.5rem" id="dash-kpis"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
+      <div class="card" style="padding:1rem">
+        <div class="card-t"><i class="ti ti-building-store"></i>Crédito vs Débito por loja</div>
+        <div style="position:relative;height:220px"><canvas id="ch-dash-loja"></canvas></div>
+      </div>
+      <div class="card" style="padding:1rem">
+        <div class="card-t"><i class="ti ti-chart-donut"></i>Composição do débito ICMS</div>
+        <div style="position:relative;height:220px"><canvas id="ch-dash-comp"></canvas></div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
+      <div class="card" style="padding:1rem">
+        <div class="card-t"><i class="ti ti-percentage"></i>Crédito por alíquota (entradas)</div>
+        <div style="position:relative;height:200px"><canvas id="ch-dash-aliq-e"></canvas></div>
+      </div>
+      <div class="card" style="padding:1rem">
+        <div class="card-t"><i class="ti ti-percentage"></i>Débito por alíquota (saídas)</div>
+        <div style="position:relative;height:200px"><canvas id="ch-dash-aliq-s"></canvas></div>
+      </div>
+    </div>
+    <div class="card" id="dash-insights">
+      <div class="card-t"><i class="ti ti-bulb"></i>Insights automáticos</div>
+      <div id="dash-insights-body"></div>
+    </div>
+    <div class="card">
+      <div class="card-t"><i class="ti ti-table"></i>Resumo consolidado por loja</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr>
+          <th>Loja</th><th class="td-r">Faturamento</th><th class="td-r">Crédito ICMS</th>
+          <th class="td-r">Débito ICMS</th><th class="td-r">Dev. reduz débito</th>
+          <th class="td-r">ICMS a pagar</th><th class="td-r">% Débito/Fat.</th>
+        </tr></thead>
+        <tbody id="dash-tb-loja"></tbody>
+        <tfoot id="dash-tf-loja"></tfoot>
+      </table></div>
+    </div>
+  </div>
+</div>
+
 <!-- CONFERÊNCIA XML -->
 <div id="pg-xml" class="page">
   <div class="section-title">
@@ -559,3 +615,916 @@ input[type=number]:focus,select.fi:focus{outline:none;border-color:var(--thalia-
 </div>
 
 </main>
+
+<script>
+'use strict';
+let E_ROWS=[],E_NOTAS=[],S_CUP=[],S_NFE=[],S_DEV=[],ALL_LOJAS={};
+let XML_ROWS=[],XML_MAP_CHAVE={};
+let pENfs=1,pEIt=1,pCup=1,pNfe=1,pDev=1,pXML=1;
+let chDashLoja=null,chDashComp=null,chDashAliqE=null,chDashAliqS=null,chLj=null;
+const PG=25;
+const G=id=>document.getElementById(id);
+const brl=v=>'R$ '+(+v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const bS=v=>(+(v||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const pct=(a,b)=>b?((a/b)*100).toFixed(1)+'%':'—';
+const str=v=>String(v===null||v===undefined?'':v).trim();
+const fmtD=v=>{if(!v||v==='')return'—';try{const d=new Date(v);if(!isNaN(d)&&d.getFullYear()>2000)return d.toLocaleDateString('pt-BR');}catch(e){}const s=String(v);if(s.length>=10)return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);return s;};
+const setMsg=(t,txt,c)=>{const e=G('msg-'+t);if(!e)return;e.textContent=txt;e.style.color=c||'var(--slate)';};
+const setProg=(t,p,txt)=>{const el=G('pb-'+t);if(el)el.style.width=p+'%';if(txt){const tel=G('pt-'+t);if(tel)tel.textContent=txt;}};
+
+const num=v=>{
+  if(v===null||v===undefined||v==='')return 0;
+  const s=String(v).trim();
+  if(s==='')return 0;
+  let clean=s;
+  const hasDot=s.includes('.');
+  const hasComma=s.includes(',');
+  if(hasDot&&hasComma){
+    const lastDot=s.lastIndexOf('.');
+    const lastComma=s.lastIndexOf(',');
+    if(lastComma>lastDot){clean=s.replace(/\./g,'').replace(',','.');}
+    else{clean=s.replace(/,/g,'');}
+  } else if(hasComma&&!hasDot){
+    const parts=s.split(',');
+    if(parts.length===2&&parts[1].length<=2){clean=s.replace(',','.');}
+    else{clean=s.replace(/,/g,'');}
+  }
+  clean=clean.replace(/[^\d.\-]/g,'');
+  return parseFloat(clean)||0;
+};
+
+const numAliq=v=>{
+  const n=num(v);
+  if(n===0)return 0;
+  if(n>=1000)return n/10000;
+  if(n>=100)return n/100;
+  return n;
+};
+
+// ── NAVEGAÇÃO ──────────────────────────────────────────────────
+function pg(id,el){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  const page=G('pg-'+id);
+  if(page)page.classList.add('active');
+  if(el)el.classList.add('active');
+  if(id==='apuracao')renderAp();
+  if(id==='lojas')renderLj();
+  if(id==='dashboard')renderDash();
+  if(id==='xml'){
+    const emp=G('xml-empty'),ok=G('xml-ok');
+    if(emp)emp.style.display=XML_ROWS.length?'none':'block';
+    if(ok)ok.style.display=XML_ROWS.length?'block':'none';
+    if(XML_ROWS.length)renderXML();
+  }
+}
+
+function stab(prefix,id,el){
+  const pageId=prefix==='e'?'entradas':'saidas';
+  const page=G('pg-'+pageId);
+  if(!page)return;
+  page.querySelectorAll('.sec').forEach(s=>s.classList.remove('active'));
+  page.querySelectorAll('.stab').forEach(t=>t.classList.remove('active'));
+  const sec=G(prefix+'-'+id);
+  if(sec)sec.classList.add('active');
+  if(el)el.classList.add('active');
+  if(prefix==='e'&&id==='nfs')renderENfs();
+  if(prefix==='e'&&id==='itens')renderEIt();
+  if(prefix==='s'&&id==='cup')renderCup();
+  if(prefix==='s'&&id==='nfe')renderNfe();
+  if(prefix==='s'&&id==='dev')renderDev();
+}
+
+function togAcc(id){
+  const b=G(id);
+  if(!b)return;
+  b.classList.toggle('open');
+  const ico=G('ico-'+id);
+  if(ico)ico.style.transform=b.classList.contains('open')?'rotate(180deg)':'';
+}
+
+// ── TEMA ESCURO ────────────────────────────────────────────────
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute('data-theme');
+  const next=cur==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme',next);
+  const ico=G('theme-icon');
+  if(ico)ico.className=next==='dark'?'ti ti-sun':'ti ti-moon';
+  try{localStorage.setItem('thalia-theme',next);}catch(e){}
+}
+(function(){
+  try{
+    const saved=localStorage.getItem('thalia-theme');
+    if(saved==='dark'){
+      document.documentElement.setAttribute('data-theme','dark');
+      document.addEventListener('DOMContentLoaded',()=>{
+        const ico=G('theme-icon');
+        if(ico)ico.className='ti ti-sun';
+      });
+    }
+  }catch(e){}
+})();
+
+// ── FILE BINDINGS ──────────────────────────────────────────────
+function bindAll(){
+  const fi_e=G('fi-e');if(fi_e&&!fi_e._b){fi_e._b=true;fi_e.onchange=function(){if(this.files[0])onFile('e',this.files[0]);};}
+  const fi_cup=G('fi-cup');if(fi_cup&&!fi_cup._b){fi_cup._b=true;fi_cup.onchange=function(){if(this.files[0])onFile('cup',this.files[0]);};}
+  const fi_nfe=G('fi-nfe');if(fi_nfe&&!fi_nfe._b){fi_nfe._b=true;fi_nfe.onchange=function(){if(this.files[0])onFile('nfe',this.files[0]);};}
+  const fi_dev=G('fi-dev');if(fi_dev&&!fi_dev._b){fi_dev._b=true;fi_dev.onchange=function(){if(this.files[0])onFile('dev',this.files[0]);};}
+  const fi_xml=G('fi-xml');if(fi_xml&&!fi_xml._b){fi_xml._b=true;fi_xml.onchange=function(){if(this.files.length)carregarXMLs(this.files);};}
+}
+document.addEventListener('DOMContentLoaded',bindAll);
+setTimeout(bindAll,500);
+
+function onFile(t,file){
+  const pw=G('pw-'+t);if(pw)pw.style.display='block';
+  setProg(t,5,'Lendo '+file.name+'...');
+  setMsg(t,'');
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(ext==='csv')lerCSV(t,file);
+  else if(ext==='xlsx'||ext==='xls')lerXLSX(t,file);
+  else{setMsg(t,'Formato não suportado. Use .xlsx ou .csv.','var(--red)');if(pw)pw.style.display='none';}
+}
+
+function lerCSV(t,file){
+  let rows=[],c=0;
+  Papa.parse(file,{header:true,skipEmptyLines:true,chunkSize:512*1024,
+    chunk(r){c+=r.data.length;rows=rows.concat(r.data);setProg(t,Math.min(85,5+c/20),'Lendo… '+c.toLocaleString('pt-BR')+' linhas');},
+    complete(){setProg(t,92,'Processando…');setTimeout(()=>processar(t,rows),30);},
+    error(e){setMsg(t,'Erro: '+e.message,'var(--red)');const pw=G('pw-'+t);if(pw)pw.style.display='none';}
+  });
+}
+
+function lerXLSX(t,file){
+  if(window.XLSX){_lx(t,file);return;}
+  const s=document.createElement('script');
+  s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  s.onload=()=>_lx(t,file);
+  s.onerror=()=>{setMsg(t,'Erro ao carregar XLSX. Use CSV.','var(--red)');const pw=G('pw-'+t);if(pw)pw.style.display='none';};
+  document.head.appendChild(s);
+}
+
+function _lx(t,file){
+  setProg(t,20,'Carregando XLSX…');
+  const r=new FileReader();
+  r.onerror=()=>{setMsg(t,'Erro ao ler.','var(--red)');const pw=G('pw-'+t);if(pw)pw.style.display='none';};
+  r.onload=e=>{
+    try{
+      setProg(t,50,'Convertendo…');
+      const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array',cellDates:false,sheetStubs:false});
+      const raw=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'',raw:true});
+      let i=0;const rows=[];
+      function proc(){
+        const end=Math.min(i+5000,raw.length);
+        for(;i<end;i++)rows.push(raw[i]);
+        setProg(t,50+Math.round((i/raw.length)*42),'Processando… '+i.toLocaleString('pt-BR'));
+        if(i<raw.length)setTimeout(proc,0);
+        else{setProg(t,93,'Finalizando…');setTimeout(()=>processar(t,rows),30);}
+      }
+      setTimeout(proc,0);
+    }catch(err){setMsg(t,'Erro: '+err.message,'var(--red)');const pw=G('pw-'+t);if(pw)pw.style.display='none';}
+  };
+  r.readAsArrayBuffer(file);
+}
+
+function fC(H,...ns){
+  for(const n of ns){if(H.includes(n))return n;}
+  for(const n of ns){const f=H.find(h=>h.toLowerCase()===n.toLowerCase());if(f)return f;}
+  return null;
+}
+
+function processar(t,raw){
+  if(!raw.length){setMsg(t,'Arquivo vazio.','var(--red)');const pw=G('pw-'+t);if(pw)pw.style.display='none';return;}
+  if(t==='e')processarEntradas(raw);
+  else if(t==='cup')processarCupons(raw);
+  else if(t==='nfe')processarNfe(raw);
+  else if(t==='dev')processarDev(raw);
+}
+
+// ── ENTRADAS ───────────────────────────────────────────────────
+function processarEntradas(raw){
+  const H=Object.keys(raw[0]);
+  console.log('Colunas entradas:', H);
+  const C={
+    nf_compra:fC(H,'NF_COMPRA','NF COMPRA'),
+    empresa:fC(H,'EMPRESA','LOJA','ECF_LOJA'),
+    razao:fC(H,'RAZAO_SOCIAL','RAZAO SOCIAL','NOME','FORNECEDOR'),
+    ean:fC(H,'EAN','COD_BARRA'),
+    desc:fC(H,'DESCRICAO.1','DESCRICAO1','DESC_PROD','DESCRICAO','PRODUTO_DESCRICAO'),
+    nfe:fC(H,'NFe','NF_NUMERO','NF NUMERO','NFE','NF_E','NF_COMPRA'),
+    chave_nfe:fC(H,'CHAVE_NFE','CHAVE_NF','CHAVE'),
+    ncm:fC(H,'NCM','NCM_ERP','COD_NCM'),
+    emissao:fC(H,'EMISSAO','EMISSÃO','MOVIMENTO','DATA_EMISSAO'),
+    processar:fC(H,'PROCESSAR','STATUS'),
+    cfop:fC(H,'CFOP','GTE_CFOP'),
+    bc:fC(H,'BC_ICMS','GTE_ICMS_BASE_CALCULO','BASE_CALCULO_ICMS','BASE_ICMS'),
+    aliq:fC(H,'ALIQUOTA','ALÍQUOTA','GTE_ICMS_ALIQUOTA','ALIQUOTA_ICMS'),
+    icms:fC(H,'VALOR_ICMS','GTE_ICMS_VALOR','ICMS_VALOR'),
+    aliq_ipi:fC(H,'ALIQ_IPI','IPI_ALIQUOTA'),
+    ipi:fC(H,'VALOR_IPI','IPI_VALOR'),
+    custo:fC(H,'CUSTO_UNITARIO','CUSTO','VALOR_UNITARIO'),
+    total:fC(H,'TOTAL_GERAL','TOTAL','VALOR_TOTAL'),
+    qtd:fC(H,'QUANTIDADE_TOTAL','QUANTIDADE','QUANTIDADE_ESTOQUE'),
+  };
+
+  if(E_ROWS.length===0&&!C.nf_compra&&!C.nfe){
+    const cols=H.join(', ');
+    setMsg('e','⚠ Itens carregados mas colunas não reconhecidas. Colunas: '+cols,'var(--amber)');
+    const pw=G('pw-e');if(pw)pw.style.display='none';
+    return;
+  }
+
+  E_ROWS=raw.map(r=>({
+    nf_compra:str(C.nf_compra?r[C.nf_compra]:''),
+    empresa:num(C.empresa?r[C.empresa]:0),
+    razao:str(C.razao?r[C.razao]:''),
+    ean:str(C.ean?r[C.ean]:''),
+    desc:str(C.desc?r[C.desc]:''),
+    nfe:str(C.nfe?r[C.nfe]:''),
+    chave_nfe:str(C.chave_nfe?r[C.chave_nfe]:'').replace(/[^0-9]/g,''),
+    ncm:str(C.ncm?r[C.ncm]:''),
+    emissao:str(C.emissao?r[C.emissao]:''),
+    processar:str(C.processar?r[C.processar]:''),
+    cfop:str(C.cfop?r[C.cfop]:''),
+    bc:num(C.bc?r[C.bc]:0),
+    aliq:numAliq(C.aliq?r[C.aliq]:0),
+    icms:num(C.icms?r[C.icms]:0),
+    aliq_ipi:num(C.aliq_ipi?r[C.aliq_ipi]:0),
+    ipi:num(C.ipi?r[C.ipi]:0),
+    custo:num(C.custo?r[C.custo]:0),
+    total:num(C.total?r[C.total]:0),
+    qtd:num(C.qtd?r[C.qtd]:0),
+  }));
+
+  const nfMap={};
+  E_ROWS.forEach(r=>{
+    const k=r.nfe||r.nf_compra;
+    if(!k)return;
+    if(!nfMap[k])nfMap[k]={nfe:r.nfe,nf_compra:r.nf_compra,chave_nfe:r.chave_nfe,empresa:r.empresa,razao:r.razao,emissao:r.emissao,cfop:r.cfop,processar:r.processar,total:r.total,bc:0,icms:0,ipi:0,ncm:r.ncm,n:0};
+    nfMap[k].bc+=r.bc;nfMap[k].icms+=r.icms;nfMap[k].ipi+=r.ipi;nfMap[k].n++;
+  });
+  E_NOTAS=Object.values(nfMap);
+
+  E_ROWS.forEach(r=>{if(r.empresa>0)ALL_LOJAS[r.empresa]=true;});
+  const lojas=[...new Set(E_ROWS.map(r=>r.empresa))].sort((a,b)=>a-b);
+
+  ['e-fl-lj','e-fl-lji'].forEach(id=>{
+    const el=G(id);if(!el)return;
+    el.innerHTML='<option value="">Todas as lojas</option>'+lojas.map(l=>'<option value="'+l+'">Loja '+l+'</option>').join('');
+  });
+  const el_cf=G('e-fl-cf');
+  if(el_cf)el_cf.innerHTML='<option value="">Todos os CFOPs</option>'+[...new Set(E_ROWS.map(r=>r.cfop))].filter(Boolean).sort().map(c=>'<option value="'+c+'">'+c+'</option>').join('');
+  const el_ali=G('e-fl-ali');
+  if(el_ali)el_ali.innerHTML='<option value="">Todas as alíquotas</option>'+[...new Set(E_ROWS.map(r=>r.aliq))].sort((a,b)=>a-b).map(a=>'<option value="'+a+'">'+a+'%</option>').join('');
+
+  const tBC=E_ROWS.reduce((s,r)=>s+r.bc,0);
+  const tICMS=E_ROWS.reduce((s,r)=>s+r.icms,0);
+  const tNF=E_NOTAS.reduce((s,n)=>s+n.total,0);
+  const nfsS=new Set(E_ROWS.filter(r=>r.processar==='S').map(r=>r.nfe)).size;
+  const nfsN=new Set(E_ROWS.filter(r=>r.processar==='N').map(r=>r.nfe)).size;
+  const iS=E_ROWS.filter(r=>r.processar==='S').length;
+  const iN=E_ROWS.filter(r=>r.processar==='N').length;
+
+  let per='';
+  try{
+    const ds=E_ROWS.map(r=>new Date(r.emissao)).filter(d=>!isNaN(d)&&d.getFullYear()>2000).sort((a,b)=>a-b);
+    if(ds.length){
+      const ini=ds[0].toLocaleDateString('pt-BR',{month:'short',year:'numeric'});
+      const fim=ds[ds.length-1].toLocaleDateString('pt-BR',{month:'short',year:'numeric'});
+      per=ini===fim?ini:ini+' → '+fim;
+    }
+  }catch(e){}
+
+  const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
+  sm('e-m-nfs',E_NOTAS.length.toLocaleString('pt-BR'));
+  sm('e-m-it',E_ROWS.length.toLocaleString('pt-BR'));
+  sm('e-m-lj',lojas.length);
+  sm('e-m-per',per||'—');
+  sm('e-m-tnf',brl(tNF));
+  sm('e-m-bc',brl(tBC));
+  sm('e-m-icms',brl(tICMS));
+  sm('e-m-proc',nfsS+' NFs / '+iS.toLocaleString('pt-BR')+' itens');
+  sm('e-m-pend',nfsN+' NFs / '+iN.toLocaleString('pt-BR')+' itens');
+
+  const am={};
+  E_ROWS.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n++;});
+  const aliqEl=G('e-aliq-dist');
+  if(aliqEl)aliqEl.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>Alíquota</th><th class="td-r">Itens</th><th class="td-r">BC ICMS</th><th class="td-r">Crédito ICMS</th><th class="td-r">%</th></tr></thead><tbody>'+Object.entries(am).sort((a,b)=>parseFloat(b)-parseFloat(a)).map(([k,v])=>'<tr><td><span class="badge b-blue">'+k+'</span></td><td class="td-r">'+v.n.toLocaleString('pt-BR')+'</td><td class="td-b">'+bS(v.bc)+'</td><td class="td-g">'+bS(v.icms)+'</td><td class="td-r">'+pct(v.icms,tICMS)+'</td></tr>').join('')+'</tbody></table></div>';
+
+  const eOk=G('e-ok');if(eOk)eOk.style.display='block';
+  setProg('e',100,'Concluído!');
+  setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens · '+E_NOTAS.length+' NFs carregadas.','var(--green)');
+  setTimeout(()=>{const pw=G('pw-e');if(pw)pw.style.display='none';},600);
+  atualizarHd();atualizarApLj();
+}
+
+// ── CUPONS ─────────────────────────────────────────────────────
+function processarCupons(raw){
+  const H=Object.keys(raw[0]);
+  const C={
+    loja:fC(H,'EMPRESA','ECF_LOJA','LOJA'),
+    data:fC(H,'EMISSAO','MOVIMENTO','DATA'),
+    cfop:fC(H,'CFOP'),
+    aliq:fC(H,'ALIQUOTA_ICMS','ALIQUOTA'),
+    cupons:fC(H,'CUPONS','QTD_CUPONS'),
+    itens:fC(H,'ITENS','QUANTIDADE'),
+    fat:fC(H,'FATURAMENTO','TOTAL','VALOR_TOTAL'),
+    bc:fC(H,'BASE_CALCULO_ICMS','BC_ICMS','ICMS_BASE_CALCULO'),
+    icms:fC(H,'VALOR_ICMS','ICMS_VALOR'),
+    status:fC(H,'STATUS'),
+  };
+  let canc=0;
+  S_CUP=raw.map(r=>({
+    loja:num(C.loja?r[C.loja]:0),
+    data:str(C.data?r[C.data]:''),
+    cfop:str(C.cfop?r[C.cfop]:''),
+    aliq:numAliq(C.aliq?r[C.aliq]:0),
+    cupons:num(C.cupons?r[C.cupons]:1),
+    itens:num(C.itens?r[C.itens]:1),
+    fat:num(C.fat?r[C.fat]:0),
+    bc:num(C.bc?r[C.bc]:0),
+    icms:num(C.icms?r[C.icms]:0),
+    status:str(C.status?r[C.status]:'A'),
+  })).filter(r=>{if(r.status==='C'||r.status==='CANCELADO'){canc++;return false;}return true;});
+  S_CUP.forEach(r=>{if(r.loja>0)ALL_LOJAS[r.loja]=true;});
+  const ljs=[...new Set(S_CUP.map(r=>r.loja))].sort((a,b)=>a-b);
+  const sfl=G('s-fl-lj');if(sfl)sfl.innerHTML='<option value="">Todas as lojas</option>'+ljs.map(l=>'<option value="'+l+'">Loja '+l+'</option>').join('');
+  const sfc=G('s-fl-cf');if(sfc)sfc.innerHTML='<option value="">Todos os CFOPs</option>'+[...new Set(S_CUP.map(r=>r.cfop))].filter(Boolean).sort().map(c=>'<option value="'+c+'">'+c+'</option>').join('');
+  const sfa=G('s-fl-al');if(sfa)sfa.innerHTML='<option value="">Todas as alíquotas</option>'+[...new Set(S_CUP.map(r=>r.aliq))].sort((a,b)=>a-b).map(a=>'<option value="'+a+'">'+a+'%</option>').join('');
+  const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
+  sm('s-m-cup',S_CUP.reduce((s,r)=>s+r.cupons,0).toLocaleString('pt-BR'));
+  sm('s-m-it',S_CUP.reduce((s,r)=>s+r.itens,0).toLocaleString('pt-BR'));
+  sm('s-m-canc',canc>0?canc.toLocaleString('pt-BR')+' reg.':'Nenhum');
+  atualizarSaidas();
+  setProg('cup',100,'Concluído!');
+  setMsg('cup','✓ '+S_CUP.length.toLocaleString('pt-BR')+' registros carregados.','var(--green)');
+  setTimeout(()=>{const pw=G('pw-cup');if(pw)pw.style.display='none';},600);
+}
+
+// ── NF-e ───────────────────────────────────────────────────────
+function processarNfe(raw){
+  const H=Object.keys(raw[0]);
+  const C={
+    num:fC(H,'NF_NUMERO','NUMERO','NFe'),
+    data:fC(H,'EMISSAO','DATA','MOVIMENTO'),
+    loja:fC(H,'EMPRESA','LOJA'),
+    entid:fC(H,'ENTIDADE','DESTINATARIO'),
+    cfop:fC(H,'CFOP'),
+    bc:fC(H,'ICMS_BASE_CALCULO','BC_ICMS','BASE_CALCULO_ICMS'),
+    icms:fC(H,'ICMS_VALOR','VALOR_ICMS'),
+    total:fC(H,'SUB_TOTAL','TOTAL','VALOR_TOTAL'),
+    status:fC(H,'EMITIR_NFE','STATUS'),
+  };
+  S_NFE=raw.map(r=>({
+    num:str(C.num?r[C.num]:''),
+    data:str(C.data?r[C.data]:''),
+    loja:num(C.loja?r[C.loja]:0),
+    entid:str(C.entid?r[C.entid]:''),
+    cfop:str(C.cfop?r[C.cfop]:''),
+    bc:num(C.bc?r[C.bc]:0),
+    icms:num(C.icms?r[C.icms]:0),
+    total:num(C.total?r[C.total]:0),
+    status:str(C.status?r[C.status]:'S'),
+  })).filter(r=>r.status==='S'||r.status==='A'||r.status==='1');
+  S_NFE.forEach(r=>{r.aliq=r.bc>0?Math.round((r.icms/r.bc)*1000)/10:0;if(r.loja>0)ALL_LOJAS[r.loja]=true;});
+  const ljs=[...new Set(S_NFE.map(r=>r.loja))].sort((a,b)=>a-b);
+  const sfln=G('s-fl-lj-n');if(sfln)sfln.innerHTML='<option value="">Todas as lojas</option>'+ljs.map(l=>'<option value="'+l+'">Loja '+l+'</option>').join('');
+  const sfcn=G('s-fl-cf-n');if(sfcn)sfcn.innerHTML='<option value="">Todos os CFOPs</option>'+[...new Set(S_NFE.map(r=>r.cfop))].filter(Boolean).sort().map(c=>'<option value="'+c+'">'+c+'</option>').join('');
+  const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
+  sm('s-m-nfe',S_NFE.length.toLocaleString('pt-BR'));
+  atualizarSaidas();
+  setProg('nfe',100,'Concluído!');
+  setMsg('nfe','✓ '+S_NFE.length+' NF-e carregadas.','var(--green)');
+  setTimeout(()=>{const pw=G('pw-nfe');if(pw)pw.style.display='none';},600);
+}
+
+// ── DEVOLUÇÕES ─────────────────────────────────────────────────
+function processarDev(raw){
+  const H=Object.keys(raw[0]);
+  const C={
+    nf:fC(H,'NF_COMPRA_DEVOLUCAO','NF_DEVOLUCAO','NF_NUMERO','NF'),
+    loja:fC(H,'EMPRESA','ECF_LOJA','LOJA'),
+    razao:fC(H,'RAZAO_SOCIAL','NOME','FORNECEDOR'),
+    data:fC(H,'MOVIMENTO','EMISSAO','DATA'),
+    cfop:fC(H,'CFOP'),
+    bc:fC(H,'BC_ICMS','ICMS_BASE_CALCULO_PRODUTOS','ICMS_BASE_CALCULO','BASE_ICMS'),
+    aliq:fC(H,'ALIQUOTA','ICMS_ALIQUOTA','ALIQ_ICMS'),
+    icms:fC(H,'VALOR_ICMS','ICMS_VALOR_PRODUTOS','ICMS_VALOR'),
+    total:fC(H,'TOTAL_GERAL','SUB_TOTAL','TOTAL'),
+    impacto:fC(H,'IMPACTO_APURACAO','IMPACTO'),
+  };
+  S_DEV=raw.map(r=>{
+    const cfop=str(C.cfop?r[C.cfop]:'');
+    const cfopN=cfop.replace(/\./g,'').trim();
+    let impacto=str(C.impacto?r[C.impacto]:'');
+    if(!impacto){
+      if(['5411','6411'].includes(cfopN))impacto='REDUZ_DEBITO';
+      else if(['5202','6202'].includes(cfopN))impacto='REDUZ_CREDITO';
+      else if(['5949','6949'].includes(cfopN))impacto='SOMA_DEBITO';
+      else impacto='VERIFICAR';
+    }
+    return{nf:str(C.nf?r[C.nf]:''),loja:num(C.loja?r[C.loja]:0),razao:str(C.razao?r[C.razao]:''),data:str(C.data?r[C.data]:''),cfop,bc:num(C.bc?r[C.bc]:0),aliq:numAliq(C.aliq?r[C.aliq]:0),icms:num(C.icms?r[C.icms]:0),total:num(C.total?r[C.total]:0),impacto};
+  }).filter(r=>r.loja>0||r.nf);
+  S_DEV.forEach(r=>{if(r.loja>0)ALL_LOJAS[r.loja]=true;});
+  const ljs=[...new Set(S_DEV.map(r=>r.loja))].sort((a,b)=>a-b);
+  const dfl=G('d-fl-lj');if(dfl)dfl.innerHTML='<option value="">Todas as lojas</option>'+ljs.map(l=>'<option value="'+l+'">Loja '+l+'</option>').join('');
+  const dfc=G('d-fl-cf');if(dfc)dfc.innerHTML='<option value="">Todos os CFOPs</option>'+[...new Set(S_DEV.map(r=>r.cfop))].filter(Boolean).sort().map(c=>'<option value="'+c+'">'+c+'</option>').join('');
+  const devRDn=S_DEV.filter(r=>r.impacto==='REDUZ_DEBITO');
+  const devRCn=S_DEV.filter(r=>r.impacto==='REDUZ_CREDITO');
+  const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
+  sm('d-m-total',S_DEV.length.toLocaleString('pt-BR')+' registros');
+  sm('d-m-rd',brl(devRDn.reduce((s,r)=>s+r.icms,0)));
+  sm('d-m-rc',brl(devRCn.reduce((s,r)=>s+r.icms,0)));
+  const sdo=G('s-dev-ok'),sde=G('s-dev-empty');
+  if(sdo)sdo.style.display='block';if(sde)sde.style.display='none';
+  atualizarSaidas();
+  setProg('dev',100,'Concluído!');
+  setMsg('dev','✓ '+S_DEV.length.toLocaleString('pt-BR')+' registros carregados.','var(--green)');
+  setTimeout(()=>{const pw=G('pw-dev');if(pw)pw.style.display='none';},600);
+  atualizarHd();atualizarApLj();
+  renderDev();
+}
+
+function limparDev(){
+  S_DEV=[];
+  const sdo=G('s-dev-ok'),sde=G('s-dev-empty'),dm=G('dev-metrics');
+  if(sdo)sdo.style.display='none';if(sde)sde.style.display='block';if(dm)dm.style.display='none';
+  setMsg('dev','');
+  const fi=G('fi-dev');if(fi)fi.value='';
+  atualizarHd();
+}
+
+// ── ATUALIZAR SAÍDAS ───────────────────────────────────────────
+function atualizarSaidas(){
+  if(!S_CUP.length&&!S_NFE.length&&!S_DEV.length)return;
+  const tCupBC=S_CUP.reduce((s,r)=>s+r.bc,0),tCupICMS=S_CUP.reduce((s,r)=>s+r.icms,0),tCupFat=S_CUP.reduce((s,r)=>s+r.fat,0);
+  const tNfeBC=S_NFE.reduce((s,r)=>s+r.bc,0),tNfeICMS=S_NFE.reduce((s,r)=>s+r.icms,0),tNfeFat=S_NFE.reduce((s,r)=>s+r.total,0);
+  const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
+  sm('s-m-fat',brl(tCupFat+tNfeFat));sm('s-m-bc',brl(tCupBC+tNfeBC));sm('s-m-deb',brl(tCupICMS+tNfeICMS));
+  if(S_DEV.length){
+    const devRD=S_DEV.filter(r=>r.impacto==='REDUZ_DEBITO');
+    const devRC=S_DEV.filter(r=>r.impacto==='REDUZ_CREDITO');
+    sm('s-m-dev-n',S_DEV.length.toLocaleString('pt-BR')+' itens');
+    sm('s-m-dev-rd',brl(devRD.reduce((s,r)=>s+r.icms,0)));
+    sm('s-m-dev-rc',brl(devRC.reduce((s,r)=>s+r.icms,0)));
+    const dm=G('dev-metrics');if(dm)dm.style.display='grid';
+  }
+  const am={},tD=tCupICMS+tNfeICMS;
+  S_CUP.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n+=r.itens||1;});
+  S_NFE.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n++;});
+  const sad=G('s-aliq-dist');
+  if(sad)sad.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>Alíquota</th><th class="td-r">Itens/NFs</th><th class="td-r">BC ICMS</th><th class="td-r">Débito ICMS</th><th class="td-r">%</th></tr></thead><tbody>'+Object.entries(am).sort((a,b)=>parseFloat(b)-parseFloat(a)).map(([k,v])=>'<tr><td><span class="badge b-red">'+k+'</span></td><td class="td-r">'+v.n.toLocaleString('pt-BR')+'</td><td class="td-b">'+bS(v.bc)+'</td><td class="td-r2">'+bS(v.icms)+'</td><td class="td-r">'+pct(v.icms,tD)+'</td></tr>').join('')+'</tbody></table></div>';
+  const sok=G('s-ok');if(sok)sok.style.display='block';
+  atualizarHd();atualizarApLj();
+}
+
+function atualizarHd(){
+  let txt='';
+  if(E_ROWS.length)txt+='Entradas: '+E_NOTAS.length+' NFs';
+  if(S_CUP.length||S_NFE.length)txt+=(txt?' · ':'')+'Saídas: '+S_CUP.reduce((s,r)=>s+r.cupons,0).toLocaleString('pt-BR')+' cupons + '+S_NFE.length+' NF-e';
+  if(S_DEV.length)txt+=(txt?' · ':'')+'Dev: '+S_DEV.length.toLocaleString('pt-BR');
+  const hst=G('hd-st');if(hst)hst.textContent=txt||'pós 01/04/2026';
+  const lojas=Object.keys(ALL_LOJAS);
+  const hper=G('hd-per');if(hper)hper.textContent=lojas.length?lojas.length+' lojas':'Nenhum dado importado';
+}
+
+function atualizarApLj(){
+  const lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);
+  const apLj=G('ap-lj');
+  if(apLj)apLj.innerHTML='<option value="">Consolidado (todas)</option>'+lojas.map(l=>'<option value="'+l+'">Loja '+l+'</option>').join('');
+}
+
+// ── TABELAS ENTRADAS ───────────────────────────────────────────
+function renderENfs(){
+  const emp=G('e-nfs-empty'),ok=G('e-nfs-ok');
+  if(!E_NOTAS.length){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const lj=(G('e-fl-lj')||{}).value||'',cf=(G('e-fl-cf')||{}).value||'',pr=(G('e-fl-pr')||{}).value||'',bu=((G('e-fl-fo')||{}).value||'').toLowerCase();
+  const f=E_NOTAS.filter(n=>{if(lj&&String(n.empresa)!==lj)return false;if(cf&&n.cfop!==cf)return false;if(pr&&n.processar!==pr)return false;if(bu&&!n.razao.toLowerCase().includes(bu))return false;return true;});
+  const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pENfs>pgs)pENfs=1;const sl=f.slice((pENfs-1)*PG,pENfs*PG);
+  const tb=G('e-tb-nfs');if(tb)tb.innerHTML=sl.map(n=>'<tr><td style="font-weight:600">'+(n.nfe||n.nf_compra||'—')+'</td><td><span class="badge b-gray">L'+n.empresa+'</span></td><td style="max-width:130px;overflow:hidden;text-overflow:ellipsis" title="'+n.razao+'">'+n.razao+'</td><td><span class="badge b-blue">'+(n.cfop||'—')+'</span></td><td class="td-dim">'+fmtD(n.emissao)+'</td><td>'+(n.processar==='S'?'<span class="badge b-ok">Processada</span>':'<span class="badge b-amber">Pendente</span>')+'</td><td class="td-r">'+bS(n.total)+'</td><td class="td-b">'+bS(n.bc)+'</td><td class="td-g">'+bS(n.icms)+'</td><td style="text-align:right;color:var(--amber)">'+(n.ipi>0?bS(n.ipi):'—')+'</td></tr>').join('');
+  const s=f.reduce((a,n)=>({total:a.total+n.total,bc:a.bc+n.bc,icms:a.icms+n.icms,ipi:a.ipi+n.ipi}),{total:0,bc:0,icms:0,ipi:0});
+  const tf=G('e-tf-nfs');if(tf)tf.innerHTML='<tr><td colspan="6">Total ('+tot+' NFs)</td><td class="td-r">'+bS(s.total)+'</td><td class="td-b">'+bS(s.bc)+'</td><td class="td-g">'+bS(s.icms)+'</td><td style="text-align:right;color:var(--amber)">'+bS(s.ipi)+'</td></tr>';
+  const pi=G('e-pi-nfs');if(pi)pi.textContent=((pENfs-1)*PG+1)+'–'+Math.min(pENfs*PG,tot)+' de '+tot;
+  const pc=G('e-pc-nfs');if(pc)pc.textContent=pENfs+'/'+pgs;
+  const pv=G('e-pv-nfs');if(pv)pv.disabled=pENfs<=1;
+  const px=G('e-px-nfs');if(px)px.disabled=pENfs>=pgs;
+}
+function pgENfs(d){pENfs+=d;renderENfs();}
+
+function renderEIt(){
+  const emp=G('e-it-empty'),ok=G('e-it-ok');
+  if(!E_ROWS.length){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const lj=(G('e-fl-lji')||{}).value||'',al=(G('e-fl-ali')||{}).value||'',bu=((G('e-fl-prod')||{}).value||'').toLowerCase();
+  const f=E_ROWS.filter(r=>{if(lj&&String(r.empresa)!==lj)return false;if(al&&String(r.aliq)!==al)return false;if(bu&&!(r.desc+r.ean+r.razao).toLowerCase().includes(bu))return false;return true;});
+  const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pEIt>pgs)pEIt=1;const sl=f.slice((pEIt-1)*PG,pEIt*PG);
+  const tb=G('e-tb-it');if(tb)tb.innerHTML=sl.map(r=>'<tr><td style="font-weight:600">'+(r.nfe||'—')+'</td><td><span class="badge b-gray">L'+r.empresa+'</span></td><td style="max-width:90px;overflow:hidden;text-overflow:ellipsis" title="'+r.razao+'">'+r.razao+'</td><td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+r.desc+'">'+r.desc+'</td><td class="td-dim">'+r.ean+'</td><td><span class="badge b-blue">'+r.cfop+'</span></td><td class="td-b">'+bS(r.bc)+'</td><td class="td-r">'+r.aliq+'%</td><td class="td-g">'+bS(r.icms)+'</td><td style="text-align:right;color:var(--amber)">'+(r.ipi>0?bS(r.ipi):'—')+'</td></tr>').join('');
+  const s=f.reduce((a,r)=>({bc:a.bc+r.bc,icms:a.icms+r.icms,ipi:a.ipi+r.ipi}),{bc:0,icms:0,ipi:0});
+  const tf=G('e-tf-it');if(tf)tf.innerHTML='<tr><td colspan="6">Total ('+tot.toLocaleString('pt-BR')+' itens)</td><td class="td-b">'+bS(s.bc)+'</td><td></td><td class="td-g">'+bS(s.icms)+'</td><td style="text-align:right;color:var(--amber)">'+bS(s.ipi)+'</td></tr>';
+  const pi=G('e-pi-it');if(pi)pi.textContent=((pEIt-1)*PG+1)+'–'+Math.min(pEIt*PG,tot)+' de '+tot.toLocaleString('pt-BR');
+  const pc=G('e-pc-it');if(pc)pc.textContent=pEIt+'/'+pgs;
+  const pv=G('e-pv-it');if(pv)pv.disabled=pEIt<=1;
+  const px=G('e-px-it');if(px)px.disabled=pEIt>=pgs;
+}
+function pgEIt(d){pEIt+=d;renderEIt();}
+
+// ── TABELAS SAÍDAS ─────────────────────────────────────────────
+function renderCup(){
+  const emp=G('s-cup-empty'),ok=G('s-cup-ok');
+  if(!S_CUP.length){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const lj=(G('s-fl-lj')||{}).value||'',cf=(G('s-fl-cf')||{}).value||'',al=(G('s-fl-al')||{}).value||'';
+  const f=S_CUP.filter(r=>{if(lj&&String(r.loja)!==lj)return false;if(cf&&r.cfop!==cf)return false;if(al&&String(r.aliq)!==al)return false;return true;});
+  const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pCup>pgs)pCup=1;const sl=f.slice((pCup-1)*PG,pCup*PG);
+  const tb=G('s-tb-cup');if(tb)tb.innerHTML=sl.map(r=>'<tr><td><span class="badge b-gray">L'+r.loja+'</span></td><td class="td-dim">'+fmtD(r.data)+'</td><td><span class="badge b-blue">'+(r.cfop||'—')+'</span></td><td class="td-r">'+(r.aliq>0?r.aliq+'%':'—')+'</td><td class="td-r">'+r.cupons.toLocaleString('pt-BR')+'</td><td class="td-r">'+r.itens.toLocaleString('pt-BR')+'</td><td class="td-r">'+bS(r.fat)+'</td><td class="td-b">'+bS(r.bc)+'</td><td class="td-r2">'+bS(r.icms)+'</td></tr>').join('');
+  const s=f.reduce((a,r)=>({fat:a.fat+r.fat,bc:a.bc+r.bc,icms:a.icms+r.icms,cup:a.cup+r.cupons,it:a.it+r.itens}),{fat:0,bc:0,icms:0,cup:0,it:0});
+  const tf=G('s-tf-cup');if(tf)tf.innerHTML='<tr><td colspan="4">Total ('+tot+' reg.)</td><td class="td-r">'+s.cup.toLocaleString('pt-BR')+'</td><td class="td-r">'+s.it.toLocaleString('pt-BR')+'</td><td class="td-r">'+bS(s.fat)+'</td><td class="td-b">'+bS(s.bc)+'</td><td class="td-r2">'+bS(s.icms)+'</td></tr>';
+  const pi=G('s-pi-cup');if(pi)pi.textContent=((pCup-1)*PG+1)+'–'+Math.min(pCup*PG,tot)+' de '+tot;
+  const pc=G('s-pc-cup');if(pc)pc.textContent=pCup+'/'+pgs;
+  const pv=G('s-pv-cup');if(pv)pv.disabled=pCup<=1;
+  const px=G('s-px-cup');if(px)px.disabled=pCup>=pgs;
+}
+function pgCup(d){pCup+=d;renderCup();}
+
+function renderNfe(){
+  const emp=G('s-nfe-empty'),ok=G('s-nfe-ok');
+  if(!S_NFE.length){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const lj=(G('s-fl-lj-n')||{}).value||'',cf=(G('s-fl-cf-n')||{}).value||'';
+  const f=S_NFE.filter(r=>{if(lj&&String(r.loja)!==lj)return false;if(cf&&r.cfop!==cf)return false;return true;});
+  const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pNfe>pgs)pNfe=1;const sl=f.slice((pNfe-1)*PG,pNfe*PG);
+  const tb=G('s-tb-nfe');if(tb)tb.innerHTML=sl.map(n=>'<tr><td style="font-weight:600">'+(n.num||'—')+'</td><td><span class="badge b-gray">L'+n.loja+'</span></td><td class="td-dim">'+n.entid+'</td><td><span class="badge b-blue">'+(n.cfop||'—')+'</span></td><td class="td-dim">'+fmtD(n.data)+'</td><td class="td-r">'+bS(n.total)+'</td><td class="td-b">'+bS(n.bc)+'</td><td class="td-r">'+(n.aliq>0?n.aliq+'%':'—')+'</td><td class="td-r2">'+bS(n.icms)+'</td></tr>').join('');
+  const s=f.reduce((a,n)=>({total:a.total+n.total,bc:a.bc+n.bc,icms:a.icms+n.icms}),{total:0,bc:0,icms:0});
+  const tf=G('s-tf-nfe');if(tf)tf.innerHTML='<tr><td colspan="5">Total ('+tot+' NF-e)</td><td class="td-r">'+bS(s.total)+'</td><td class="td-b">'+bS(s.bc)+'</td><td></td><td class="td-r2">'+bS(s.icms)+'</td></tr>';
+  const pi=G('s-pi-nfe');if(pi)pi.textContent=((pNfe-1)*PG+1)+'–'+Math.min(pNfe*PG,tot)+' de '+tot;
+  const pc=G('s-pc-nfe');if(pc)pc.textContent=pNfe+'/'+pgs;
+  const pv=G('s-pv-nfe');if(pv)pv.disabled=pNfe<=1;
+  const px=G('s-px-nfe');if(px)px.disabled=pNfe>=pgs;
+}
+function pgNfe(d){pNfe+=d;renderNfe();}
+
+// ── DEVOLUÇÕES TABLE ───────────────────────────────────────────
+function renderDev(){
+  const emp=G('s-dev-empty'),ok=G('s-dev-ok');
+  if(!S_DEV.length){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const lj=(G('d-fl-lj')||{}).value||'',cf=(G('d-fl-cf')||{}).value||'',imp=(G('d-fl-imp')||{}).value||'';
+  const f=S_DEV.filter(r=>{if(lj&&String(r.loja)!==lj)return false;if(cf&&r.cfop!==cf)return false;if(imp&&r.impacto!==imp)return false;return true;});
+  const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pDev>pgs)pDev=1;const sl=f.slice((pDev-1)*PG,pDev*PG);
+  const impBadge=imp=>{
+    if(imp==='REDUZ_DEBITO')return '<span class="badge b-green">↓ Reduz débito</span>';
+    if(imp==='REDUZ_CREDITO')return '<span class="badge b-amber">↓ Reduz crédito</span>';
+    if(imp==='SOMA_DEBITO')return '<span class="badge b-red">↑ Soma débito</span>';
+    return '<span class="badge b-gray">Verificar</span>';
+  };
+  const tb=G('d-tb');if(tb)tb.innerHTML=sl.map(r=>'<tr><td style="font-weight:600">'+(r.nf||'—')+'</td><td><span class="badge b-gray">L'+r.loja+'</span></td><td style="max-width:130px;overflow:hidden;text-overflow:ellipsis" title="'+r.razao+'">'+r.razao+'</td><td><span class="badge b-blue">'+(r.cfop||'—')+'</span></td><td class="td-dim">'+fmtD(r.data)+'</td><td>'+impBadge(r.impacto)+'</td><td class="td-r">'+bS(r.total)+'</td><td class="td-b">'+bS(r.bc)+'</td><td class="'+(r.impacto==='REDUZ_DEBITO'||r.impacto==='REDUZ_CREDITO'?'td-g':'td-r2')+'">'+bS(r.icms)+'</td></tr>').join('');
+  const s=f.reduce((a,r)=>({total:a.total+r.total,bc:a.bc+r.bc,icms:a.icms+r.icms}),{total:0,bc:0,icms:0});
+  const tf=G('d-tf');if(tf)tf.innerHTML='<tr><td colspan="6">Total ('+tot+' registros)</td><td class="td-r">'+bS(s.total)+'</td><td class="td-b">'+bS(s.bc)+'</td><td class="td-r">'+bS(s.icms)+'</td></tr>';
+  const pi=G('d-pi');if(pi)pi.textContent=((pDev-1)*PG+1)+'–'+Math.min(pDev*PG,tot)+' de '+tot;
+  const pc=G('d-pc');if(pc)pc.textContent=pDev+'/'+pgs;
+  const pv=G('d-pv');if(pv)pv.disabled=pDev<=1;
+  const px=G('d-px');if(px)px.disabled=pDev>=pgs;
+}
+function pgDev(d){pDev+=d;renderDev();}
+
+// ── APURAÇÃO ───────────────────────────────────────────────────
+function renderAp(){
+  const ljEl=G('ap-lj');if(!ljEl)return;
+  const lj=ljEl.value,saldo=parseFloat((G('ap-saldo')||{}).value)||0;
+  const temE=E_ROWS.length>0,temS=S_CUP.length>0||S_NFE.length>0;
+  const av=G('ap-aviso');if(av)av.style.display=(!temE||!temS)?'flex':'none';
+  const ex=G('ap-export');if(ex)ex.style.display=(temE&&temS)?'flex':'none';
+  if(!temE&&!temS){const ar=G('ap-res');if(ar)ar.innerHTML='';return;}
+  const eRows=lj?E_ROWS.filter(r=>String(r.empresa)===lj):E_ROWS;
+  const eNotas=lj?E_NOTAS.filter(n=>String(n.empresa)===lj):E_NOTAS;
+  const sCup=lj?S_CUP.filter(r=>String(r.loja)===lj):S_CUP;
+  const sNfe=lj?S_NFE.filter(r=>String(r.loja)===lj):S_NFE;
+  const devLj=lj?S_DEV.filter(r=>String(r.loja)===lj):S_DEV;
+  const tCred=eRows.reduce((s,r)=>s+r.icms,0),tEBC=eRows.reduce((s,r)=>s+r.bc,0),tENF=eNotas.reduce((s,n)=>s+n.total,0);
+  const tDevRC=devLj.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);
+  const tDevRD=devLj.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0);
+  const tDevSD=devLj.filter(r=>r.impacto==='SOMA_DEBITO').reduce((s,r)=>s+r.icms,0);
+  const credTotal=tCred+saldo-tDevRC;
+  const tCupICMS=sCup.reduce((s,r)=>s+r.icms,0),tCupBC=sCup.reduce((s,r)=>s+r.bc,0),tCupFat=sCup.reduce((s,r)=>s+r.fat,0);
+  const tNfeICMS=sNfe.reduce((s,r)=>s+r.icms,0),tNfeBC=sNfe.reduce((s,r)=>s+r.bc,0),tNfeFat=sNfe.reduce((s,r)=>s+r.total,0);
+  const tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD,tFat=tCupFat+tNfeFat;
+  const saldoFinal=credTotal-tDeb,aPagar=Math.max(0,-saldoFinal),sCr=Math.max(0,saldoFinal);
+  const am={};
+  sCup.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n+=r.itens||1;});
+  sNfe.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n++;});
+  const ar=G('ap-res');
+  if(!ar)return;
+  ar.innerHTML='<div class="metrics c4">'
+    +'<div class="metric"><div class="metric-label">Faturamento total</div><div class="metric-value muted" style="font-size:15px">'+brl(tFat)+'</div></div>'
+    +'<div class="metric"><div class="metric-label">Crédito ICMS entradas</div><div class="metric-value green" style="font-size:15px">'+brl(tCred)+'</div></div>'
+    +'<div class="metric"><div class="metric-label">Débito ICMS saídas</div><div class="metric-value red" style="font-size:15px">'+brl(tDeb)+'</div></div>'
+    +'<div class="metric"><div class="metric-label">Resultado</div><div class="metric-value '+(aPagar>0?'red':'green')+'" style="font-size:15px">'+(aPagar>0?brl(aPagar)+' pagar':brl(sCr)+' credor')+'</div></div>'
+    +'</div>'
+    +(aPagar>0
+      ?'<div class="ap-box ap-pagar"><div class="ap-label r"><i class="ti ti-alert-triangle"></i> ICMS A PAGAR NO PERÍODO</div><div class="ap-num r">'+brl(aPagar)+'</div><div class="ap-sub">Débito '+brl(tDeb)+' − Crédito total '+brl(credTotal)+'</div></div>'
+      :'<div class="ap-box ap-credor"><div class="ap-label g"><i class="ti ti-circle-check"></i> SALDO CREDOR</div><div class="ap-num g">'+brl(sCr)+'</div><div class="ap-sub">Transfere para o próximo período</div></div>')
+    +'<div class="card"><div class="card-t"><i class="ti ti-report"></i>Memória de Cálculo Completa</div><table>'
+    +'<tr><td class="td-dim">Total NFs compras (referência)</td><td class="td-r">'+brl(tENF)+'</td></tr>'
+    +'<tr><td class="td-dim">Base de cálculo ICMS entradas</td><td class="td-b">'+brl(tEBC)+'</td></tr>'
+    +'<tr><td style="font-weight:600">Crédito ICMS das entradas</td><td class="td-g">'+brl(tCred)+'</td></tr>'
+    +'<tr><td class="td-dim">(+) Saldo credor mês anterior</td><td style="text-align:right;font-weight:600;color:var(--blue)">'+brl(saldo)+'</td></tr>'
+    +(tDevRC>0?'<tr style="background:var(--amber-lt)"><td style="color:var(--amber)">(−) Estorno crédito devoluções 5202/6202</td><td style="text-align:right;font-weight:600;color:var(--amber)">('+brl(tDevRC)+')</td></tr>':'')
+    +'<tr style="border-top:1px solid var(--border)"><td style="font-weight:600">= Crédito líquido disponível</td><td class="td-g">'+brl(credTotal)+'</td></tr>'
+    +'<tr><td class="td-dim">Débito ICMS — cupons fiscais</td><td class="td-r2">('+brl(tCupICMS)+')</td></tr>'
+    +'<tr><td class="td-dim">Débito ICMS — NF-e de venda</td><td class="td-r2">('+brl(tNfeICMS)+')</td></tr>'
+    +(tDevSD>0?'<tr style="background:var(--red-lt)"><td style="color:var(--red)">(+) Outras saídas 5949/6949</td><td class="td-r2">('+brl(tDevSD)+')</td></tr>':'')
+    +(tDevRD>0?'<tr style="background:var(--green-lt)"><td style="color:var(--green)">(−) Devoluções de venda 5411/6411</td><td style="text-align:right;font-weight:600;color:var(--green)">− '+brl(tDevRD)+'</td></tr>':'')
+    +'<tr style="border-top:1px solid var(--border)"><td style="font-weight:600">= Débito líquido saídas</td><td class="td-r2">('+brl(tDeb)+')</td></tr>'
+    +'<tr style="border-top:2px solid var(--border)"><td style="font-weight:700;font-size:14px">RESULTADO DO PERÍODO</td><td style="text-align:right;font-weight:700;font-size:14px;color:'+(aPagar>0?'var(--red)':'var(--green)')+'">'+(aPagar>0?brl(aPagar)+' a pagar':brl(sCr)+' saldo credor')+'</td></tr>'
+    +'</table></div>'
+    +'<div class="card"><div class="card-t"><i class="ti ti-percentage"></i>Composição do débito por alíquota</div>'
+    +'<div class="tbl-wrap"><table><thead><tr><th>Alíquota</th><th class="td-r">Itens/NFs</th><th class="td-r">BC ICMS</th><th class="td-r">Débito ICMS</th><th class="td-r">% do débito</th></tr></thead><tbody>'
+    +Object.entries(am).sort((a,b)=>parseFloat(b)-parseFloat(a)).map(([k,v])=>'<tr><td><span class="badge b-red">'+k+'</span></td><td class="td-r">'+v.n.toLocaleString('pt-BR')+'</td><td class="td-b">'+bS(v.bc)+'</td><td class="td-r2">'+bS(v.icms)+'</td><td class="td-r">'+pct(v.icms,tDeb)+'</td></tr>').join('')
+    +'</tbody><tfoot><tr><td colspan="3">Total</td><td class="td-r2">'+bS(tDeb)+'</td><td></td></tr></tfoot></table></div></div>';
+}
+
+// ── POR LOJA ───────────────────────────────────────────────────
+function renderLj(){
+  const temE=E_ROWS.length>0,temS=S_CUP.length>0||S_NFE.length>0;
+  const emp=G('lj-empty'),ok=G('lj-ok');
+  if(!temE&&!temS){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const ljExBar=G('lj-export-bar');if(ljExBar)ljExBar.style.display='flex';
+  const lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);
+  const dados=lojas.map(l=>{
+    const er=E_ROWS.filter(r=>String(r.empresa)===l);
+    const cr=S_CUP.filter(r=>String(r.loja)===l);
+    const nr=S_NFE.filter(r=>String(r.loja)===l);
+    const dr=S_DEV.filter(r=>String(r.loja)===l);
+    const c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);
+    const dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0);
+    const dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);
+    const fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);
+    const pagar=Math.max(0,(db-dRD)-(c-dRC)),scred=Math.max(0,(c-dRC)-(db-dRD));
+    return{l,fat,cred:c,credLiq:c-dRC,deb:db,debLiq:db-dRD,devRD:dRD,devRC:dRC,pagar,scred,pct:fat>0?((db-dRD)/fat*100):0};
+  }).sort((a,b)=>b.pagar-a.pagar);
+  if(chLj)chLj.destroy();
+  const chEl=G('ch-lj');
+  if(chEl)chLj=new Chart(chEl,{type:'bar',data:{labels:dados.map(d=>'L'+d.l),datasets:[{label:'Crédito',data:dados.map(d=>+d.credLiq.toFixed(2)),backgroundColor:'rgba(13,122,95,.7)',borderRadius:4},{label:'Débito',data:dados.map(d=>+d.debLiq.toFixed(2)),backgroundColor:'rgba(214,43,43,.7)',borderRadius:4},{label:'A pagar',data:dados.map(d=>+d.pagar.toFixed(2)),backgroundColor:'rgba(192,57,43,.9)',borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$'+Number(v).toLocaleString('pt-BR'),font:{family:'Inter',size:11}},grid:{color:'rgba(0,0,0,.06)'}},x:{grid:{display:false},ticks:{font:{family:'Inter',size:11}}}}}});
+  const tC=dados.reduce((s,d)=>s+d.credLiq,0),tD=dados.reduce((s,d)=>s+d.debLiq,0),tP=dados.reduce((s,d)=>s+d.pagar,0),tS=dados.reduce((s,d)=>s+d.scred,0),tF=dados.reduce((s,d)=>s+d.fat,0);
+  const tb=G('tb-lj');if(tb)tb.innerHTML=dados.map(d=>'<tr><td><span class="badge b-gray">Loja '+d.l+'</span></td><td class="td-r">'+brl(d.fat)+'</td><td class="td-g">'+brl(d.credLiq)+'</td><td class="td-r2">'+brl(d.debLiq)+'</td><td style="text-align:right;color:var(--green)">'+(d.devRD>0?brl(d.devRD):'—')+'</td><td style="text-align:right;font-weight:700;color:'+(d.pagar>0?'var(--red)':'var(--green)')+'">'+(d.pagar>0?brl(d.pagar):'<span style="color:var(--green)">Credor</span>')+'</td><td class="td-r">'+d.pct.toFixed(2)+'%</td></tr>').join('');
+  const tf=G('tf-lj');if(tf)tf.innerHTML='<tr><td>Consolidado</td><td class="td-r">'+brl(tF)+'</td><td class="td-g">'+brl(tC)+'</td><td class="td-r2">'+brl(tD)+'</td><td style="text-align:right;color:var(--green)">'+brl(dados.reduce((s,d)=>s+d.devRD,0))+'</td><td style="text-align:right;color:var(--red);font-weight:700">'+brl(tP)+'</td><td></td></tr>';
+}
+
+// ── DASHBOARD ─────────────────────────────────────────────────
+function renderDash(){
+  const temE=E_ROWS.length>0,temS=S_CUP.length>0||S_NFE.length>0;
+  const emp=G('dash-empty'),ok=G('dash-ok');
+  if(!temE&&!temS){if(emp)emp.style.display='block';if(ok)ok.style.display='none';return;}
+  if(emp)emp.style.display='none';if(ok)ok.style.display='block';
+  const exBar=G('dash-export-bar');if(exBar)exBar.style.display='flex';
+  const saldo=parseFloat((G('ap-saldo')||{}).value)||0;
+  const tCred=E_ROWS.reduce((s,r)=>s+r.icms,0);
+  const tCupICMS=S_CUP.reduce((s,r)=>s+r.icms,0),tNfeICMS=S_NFE.reduce((s,r)=>s+r.icms,0);
+  const tDevRD=S_DEV.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0);
+  const tDevRC=S_DEV.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);
+  const credTotal=tCred+saldo-tDevRC,tDeb=tCupICMS+tNfeICMS-tDevRD;
+  const aPagar=Math.max(0,tDeb-credTotal),tFat=S_CUP.reduce((s,r)=>s+r.fat,0)+S_NFE.reduce((s,r)=>s+r.total,0);
+  const kpis=G('dash-kpis');
+  if(kpis)kpis.innerHTML='<div class="metric"><div class="metric-label">Faturamento total</div><div class="metric-value muted" style="font-size:16px">'+brl(tFat)+'</div></div><div class="metric"><div class="metric-label">Crédito líquido</div><div class="metric-value green" style="font-size:16px">'+brl(credTotal)+'</div></div><div class="metric"><div class="metric-label">Débito líquido</div><div class="metric-value red" style="font-size:16px">'+brl(tDeb)+'</div></div><div class="metric"><div class="metric-label">ICMS a pagar</div><div class="metric-value '+(aPagar>0?'red':'green')+'" style="font-size:16px">'+brl(aPagar)+'</div></div>';
+  const lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);
+  const dadosLoja=lojas.map(l=>{
+    const er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);
+    const c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);
+    const dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);
+    const fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);
+    return{l,fat,credLiq:c-dRC,debLiq:db-dRD,devRD:dRD,pagar:Math.max(0,(db-dRD)-(c-dRC)),pct:fat>0?((db-dRD)/fat*100):0};
+  }).sort((a,b)=>b.pagar-a.pagar);
+  // Gráficos
+  if(chDashLoja)chDashLoja.destroy();
+  const clEl=G('ch-dash-loja');
+  if(clEl)chDashLoja=new Chart(clEl,{type:'bar',data:{labels:dadosLoja.map(d=>'L'+d.l),datasets:[{label:'Crédito',data:dadosLoja.map(d=>+d.credLiq.toFixed(2)),backgroundColor:'rgba(13,122,95,.7)',borderRadius:3},{label:'Débito',data:dadosLoja.map(d=>+d.debLiq.toFixed(2)),backgroundColor:'rgba(214,43,43,.7)',borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$'+Number(v).toLocaleString('pt-BR'),font:{size:10}},grid:{color:'rgba(128,128,128,.08)'}},x:{grid:{display:false},ticks:{font:{size:10}}}}}});
+  if(chDashComp)chDashComp.destroy();
+  const ccEl=G('ch-dash-comp');
+  if(ccEl)chDashComp=new Chart(ccEl,{type:'doughnut',data:{labels:['Cupons','NF-e venda','(−) Dev 5411/6411'],datasets:[{data:[tCupICMS,tNfeICMS,tDevRD],backgroundColor:['rgba(214,43,43,.8)','rgba(192,57,43,.6)','rgba(13,122,95,.7)'],borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11},boxWidth:12}}}}});
+  const amE={};E_ROWS.forEach(r=>{const k=r.aliq+'%';if(!amE[k])amE[k]=0;amE[k]+=r.icms;});
+  const amESort=Object.entries(amE).sort((a,b)=>b[1]-a[1]);
+  if(chDashAliqE)chDashAliqE.destroy();
+  const ceEl=G('ch-dash-aliq-e');
+  if(ceEl)chDashAliqE=new Chart(ceEl,{type:'bar',data:{labels:amESort.map(([k])=>k),datasets:[{data:amESort.map(([,v])=>+v.toFixed(2)),backgroundColor:'rgba(27,79,216,.7)',borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$'+Number(v).toLocaleString('pt-BR'),font:{size:10}},grid:{color:'rgba(128,128,128,.08)'}},x:{grid:{display:false},ticks:{font:{size:11}}}}}});
+  const amS={};S_CUP.forEach(r=>{const k=r.aliq+'%';if(!amS[k])amS[k]=0;amS[k]+=r.icms;});S_NFE.forEach(r=>{const k=r.aliq+'%';if(!amS[k])amS[k]=0;amS[k]+=r.icms;});
+  const amSSort=Object.entries(amS).sort((a,b)=>b[1]-a[1]).filter(([k])=>k!=='0%');
+  if(chDashAliqS)chDashAliqS.destroy();
+  const csEl=G('ch-dash-aliq-s');
+  if(csEl)chDashAliqS=new Chart(csEl,{type:'bar',data:{labels:amSSort.map(([k])=>k),datasets:[{data:amSSort.map(([,v])=>+v.toFixed(2)),backgroundColor:'rgba(214,43,43,.7)',borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$'+Number(v).toLocaleString('pt-BR'),font:{size:10}},grid:{color:'rgba(128,128,128,.08)'}},x:{grid:{display:false},ticks:{font:{size:11}}}}}});
+  // Insights
+  const taxa=tFat>0?(aPagar/tFat*100):0,aprov=tDeb>0?(credTotal/tDeb*100):0;
+  const top=dadosLoja[0];
+  const ins=[];
+  ins.push({i:'ti-percentage',c:'var(--blue)',t:'Taxa efetiva de ICMS',x:'O ICMS a pagar representa <strong>'+taxa.toFixed(2)+'%</strong> do faturamento de '+brl(tFat)+'. Em abril/2026 (primeiro mês pós-ST) este valor tende a ser mais alto pois não havia crédito acumulado.'});
+  ins.push({i:'ti-circle-check',c:'var(--green)',t:'Aproveitamento do crédito',x:'O crédito das compras cobre <strong>'+aprov.toFixed(1)+'%</strong> do débito das vendas. '+(aprov<40?'Índice baixo é esperado no primeiro mês pós-ST — tende a crescer com o acúmulo de crédito.':aprov<70?'Índice moderado.':'Bom aproveitamento.')});
+  if(top&&top.pagar>0)ins.push({i:'ti-building-store',c:'var(--red)',t:'Destaque: Loja '+top.l,x:'A Loja '+top.l+' responde por <strong>'+brl(top.pagar)+'</strong> de ICMS ('+pct(top.pagar,aPagar)+' do total). Faturamento: '+brl(top.fat)+'. Taxa efetiva: '+top.pct.toFixed(2)+'%.'});
+  if(tDevRD>0)ins.push({i:'ti-arrow-back-up',c:'var(--amber)',t:'Impacto das devoluções',x:'Devoluções 5411/6411 reduziram o débito em <strong>'+brl(tDevRD)+'</strong>. Estorno crédito 5202/6202: <strong>'+brl(tDevRC)+'</strong>.'});
+  const ib=G('dash-insights-body');
+  if(ib)ib.innerHTML=ins.map(i=>'<div style="display:flex;gap:.85rem;padding:.85rem 0;border-bottom:1px solid var(--border)"><div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti '+i.i+'" style="font-size:17px;color:'+i.c+'"></i></div><div><div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px">'+i.t+'</div><div style="font-size:12px;color:var(--text2);line-height:1.6">'+i.x+'</div></div></div>').join('');
+  // Tabela por loja
+  const tb=G('dash-tb-loja');if(tb)tb.innerHTML=dadosLoja.map(d=>'<tr><td><span class="badge b-gray">Loja '+d.l+'</span></td><td class="td-r">'+bS(d.fat)+'</td><td class="td-g">'+bS(d.credLiq)+'</td><td class="td-r2">'+bS(d.debLiq)+'</td><td style="text-align:right;color:var(--green)">'+(d.devRD>0?bS(d.devRD):'—')+'</td><td style="text-align:right;font-weight:700;color:'+(d.pagar>0?'var(--red)':'var(--green)')+'">'+(d.pagar>0?brl(d.pagar):'Credor')+'</td><td class="td-r">'+d.pct.toFixed(2)+'%</td></tr>').join('');
+  const tf=G('dash-tf-loja');const totF=dadosLoja.reduce((s,d)=>s+d.fat,0),totC=dadosLoja.reduce((s,d)=>s+d.credLiq,0),totD=dadosLoja.reduce((s,d)=>s+d.debLiq,0),totRD=dadosLoja.reduce((s,d)=>s+d.devRD,0),totP=dadosLoja.reduce((s,d)=>s+d.pagar,0);
+  if(tf)tf.innerHTML='<tr><td>Consolidado ('+lojas.length+' lojas)</td><td class="td-r">'+bS(totF)+'</td><td class="td-g">'+bS(totC)+'</td><td class="td-r2">'+bS(totD)+'</td><td style="text-align:right;color:var(--green)">'+bS(totRD)+'</td><td style="text-align:right;color:var(--red);font-weight:700">'+brl(totP)+'</td><td></td></tr>';
+}
+
+// ── CONFERÊNCIA XML ────────────────────────────────────────────
+function carregarXMLs(files){
+  XML_MAP_CHAVE={};
+  const pw=G('pw-xml');if(pw)pw.style.display='block';
+  const ok=G('xml-ok'),emp=G('xml-empty');
+  if(ok)ok.style.display='none';if(emp)emp.style.display='none';
+  setMsg('xml','');
+  setProg('xml',0,'');
+  let total=files.length,done=0,erros=0;
+  const ptEl=G('pt-xml');if(ptEl)ptEl.textContent='Lendo 0 de '+total+' XMLs...';
+  Array.from(files).forEach(function(file){
+    const reader=new FileReader();
+    reader.onerror=function(){erros++;done++;checkXMLDone(total,done,erros);};
+    reader.onload=function(e){
+      try{
+        const parser=new DOMParser();
+        const doc=parser.parseFromString(e.target.result,'text/xml');
+        const itens=extrairDadosXML(doc);
+        itens.forEach(function(it){if(it.chave)XML_MAP_CHAVE[it.chave]=it;});
+      }catch(ex){erros++;}
+      done++;
+      setProg('xml',Math.round(done/total*80),'');
+      if(ptEl)ptEl.textContent='Lendo '+done+' de '+total+' XMLs...';
+      checkXMLDone(total,done,erros);
+    };
+    reader.readAsText(file,'UTF-8');
+  });
+}
+
+function checkXMLDone(total,done,erros){
+  if(done<total)return;
+  const ptEl=G('pt-xml');if(ptEl)ptEl.textContent='XMLs carregados. Cruzando com ERP...';
+  setTimeout(function(){cruzarERPcomXML(erros);},100);
+}
+
+function extrairDadosXML(doc){
+  const ns='http://www.portalfiscal.inf.br/nfe';
+  function qs(node,tag){const r=node.getElementsByTagNameNS(ns,tag);if(r.length)return r;return node.getElementsByTagName(tag);}
+  function qt(node,tag){const r=qs(node,tag);return r.length?r[0].textContent.trim():'';}
+  const infNFe=qs(doc.documentElement,'infNFe');
+  if(!infNFe.length)return[];
+  const inf=infNFe[0];
+  const chaveRaw=inf.getAttribute('Id')||'';
+  const chave=chaveRaw.replace(/^NFe/,'').replace(/[^0-9]/g,'');
+  const emit=qs(inf,'emit')[0]||inf;
+  const xNomeEmit=qt(emit,'xNome'),cnpjEmit=qt(emit,'CNPJ'),nNF=qt(inf,'nNF'),dhEmi=qt(inf,'dhEmi')||qt(inf,'dEmi');
+  const dets=qs(inf,'det');
+  const itens=[];
+  for(let i=0;i<dets.length;i++){
+    const det=dets[i],prod=qs(det,'prod')[0]||det,imp=qs(det,'imposto')[0]||det,icmsGrp=qs(imp,'ICMS')[0]||imp;
+    const xProd=qt(prod,'xProd'),ncm=qt(prod,'NCM'),ean=qt(prod,'cEAN')||qt(prod,'cEANTrib'),vProd=parseFloat(qt(prod,'vProd'))||0;
+    let pICMS=0,vICMS=0,vBC=0;
+    const tags=['ICMS00','ICMS10','ICMS20','ICMS30','ICMS40','ICMS41','ICMS50','ICMS51','ICMS60','ICMS70','ICMS90','ICMSPart','ICMSST'];
+    for(let t=0;t<tags.length;t++){const nd=qs(icmsGrp,tags[t]);if(nd.length){const n=nd[0];vBC=parseFloat(qt(n,'vBC'))||vBC;pICMS=parseFloat(qt(n,'pICMS'))||pICMS;vICMS=parseFloat(qt(n,'vICMS'))||vICMS;break;}}
+    itens.push({chave,nNF,dhEmi,cnpjEmit,xNomeEmit,xProd,ncm,ean,vProd,vBC_xml:vBC,aliq_xml:pICMS,icms_xml:vICMS});
+  }
+  return itens;
+}
+
+function cruzarERPcomXML(errosXML){
+  if(!E_ROWS.length){setMsg('xml','⚠ Importe primeiro o arquivo de compras na aba Entradas.','var(--amber)');const pw=G('pw-xml');if(pw)pw.style.display='none';const emp=G('xml-empty');if(emp)emp.style.display='block';return;}
+  XML_ROWS=[];
+  // Agrupar ERP por NF
+  const erpPorNF={};
+  E_ROWS.forEach(function(r){
+    const chave=(r.chave_nfe||'').replace(/[^0-9]/g,'');
+    const nfe=(r.nfe||'').replace(/[^0-9]/g,'');
+    const key=chave||nfe;if(!key)return;
+    if(!erpPorNF[key])erpPorNF[key]={chave_erp:chave,nfe_erp:r.nfe,empresa:r.empresa,razao:r.razao,emissao:r.emissao,itens:[]};
+    erpPorNF[key].itens.push(r);
+  });
+  let semXML=0,divNCM=0,divICMS=0;
+  Object.values(erpPorNF).forEach(function(nf){
+    const xmlNF=XML_MAP_CHAVE[nf.chave_erp]||null;
+    const totalICMS_ERP=nf.itens.reduce(function(s,r){return s+r.icms;},0);
+    const totalBC_ERP=nf.itens.reduce(function(s,r){return s+r.bc;},0);
+    const totalNF_ERP=nf.itens.reduce(function(s,r){return s+r.total;},0);
+    if(!xmlNF){semXML++;XML_ROWS.push({grupo:'sem_xml',empresa:nf.empresa,razao:nf.razao,chave_erp:nf.chave_erp,nfe_erp:nf.nfe_erp,emissao_erp:nf.itens[0].emissao,ncm_xml:'',aliq_xml:0,icms_xml:0,ncm_erp:nf.itens[0].ncm||'',aliq_erp:nf.itens[0].aliq,icms_erp:totalICMS_ERP,bc_erp:totalBC_ERP,total_erp:totalNF_ERP,diff_icms:0,div_ncm:false,div_aliq:false,div_icms:false,status:'sem_xml',itens_erp:nf.itens.length});return;}
+    const totalICMS_XML=xmlNF.icms_xml,diff=totalICMS_XML-totalICMS_ERP;
+    const ncm_erp=(nf.itens[0].ncm||'').replace(/[^0-9]/g,''),ncm_xml=(xmlNF.ncm||'').replace(/[^0-9]/g,'');
+    const div_ncm=!!(ncm_xml&&ncm_erp&&ncm_xml!==ncm_erp);
+    const div_icms=Math.abs(diff)>0.05;
+    const div_aliq=Math.abs(xmlNF.aliq_xml-numAliq(nf.itens[0].aliq))>0.5;
+    if(div_ncm)divNCM++;if(div_icms)divICMS++;
+    const status=(div_ncm||div_icms||div_aliq)?'divergente':'ok';
+    XML_ROWS.push({grupo:status,empresa:nf.empresa,razao:nf.razao,chave_erp:nf.chave_erp,nfe_erp:nf.nfe_erp,emissao_erp:nf.itens[0].emissao,ncm_xml:xmlNF.ncm,aliq_xml:xmlNF.aliq_xml,icms_xml:totalICMS_XML,ncm_erp:nf.itens[0].ncm||'',aliq_erp:nf.itens[0].aliq,icms_erp:totalICMS_ERP,bc_erp:totalBC_ERP,total_erp:totalNF_ERP,diff_icms:diff,div_ncm,div_aliq,div_icms,status,itens_erp:nf.itens.length});
+  });
+  const total=XML_ROWS.length,comXML=total-semXML,xmlsTotal=Object.keys(XML_MAP_CHAVE).length;
+  const totalDiff=XML_ROWS.reduce(function(s,r){return s+r.diff_icms;},0);
+  const sm=(id,v)=>{const el=G(id);if(el)el.textContent=v;};
+  sm('xml-m-nfs',total+' NFs');
+  sm('xml-m-xml',comXML+' encontrados / '+xmlsTotal+' XMLs');
+  sm('xml-m-sem',semXML>0?semXML+' NFs':'Nenhuma');
+  sm('xml-m-div',(divNCM+divICMS)>0?(divNCM+' NCM · '+divICMS+' ICMS'):'Nenhuma');
+  let resumo='';
+  if(semXML>0)resumo+='<div class="alert al-warn"><i class="ti ti-alert-triangle al-i"></i><div><strong>'+semXML+' NFs do ERP sem XML correspondente.</strong> Verifique se os XMLs foram baixados da SEFAZ ou se as notas foram canceladas pelo fornecedor.</div></div>';
+  if(Math.abs(totalDiff)>0.05){const fav=totalDiff<0;resumo+='<div class="alert '+(fav?'al-ok':'al-warn')+'"><i class="ti ti-'+(fav?'circle-check':'alert-triangle')+' al-i"></i><div><strong>Diferença total de ICMS: '+brl(Math.abs(totalDiff))+'.</strong> '+(fav?'O ERP registrou mais crédito que o XML indica — possível crédito a maior.':'O XML tem mais ICMS que o ERP — possível crédito não aproveitado de '+brl(totalDiff)+'.')+'</div></div>';}
+  if(!resumo&&semXML===0&&(divNCM+divICMS)===0)resumo='<div class="alert al-ok"><i class="ti ti-circle-check al-i"></i><div><strong>Tudo conferido!</strong> Todas as NFs têm XML e sem divergências.</div></div>';
+  const xr=G('xml-resumo');if(xr)xr.innerHTML=resumo;
+  const fornecedores=[...new Set(XML_ROWS.map(r=>r.razao).filter(Boolean))].sort();
+  const xfs=G('xml-fl-forn-sel');if(xfs)xfs.innerHTML='<option value="">Todos os fornecedores</option>'+fornecedores.map(f=>'<option value="'+f+'">'+f+'</option>').join('');
+  setProg('xml',100,'Concluído! '+total+' NFs processadas'+(errosXML>0?' ('+errosXML+' XMLs com erro)':'')+'.');
+  setTimeout(function(){const pw=G('pw-xml');if(pw)pw.style.display='none';},800);
+  setMsg('xml','✓ '+comXML+' NFs com XML · '+semXML+' sem XML · '+(divNCM+divICMS)+' divergências',(semXML>0||(divNCM+divICMS)>0)?'var(--amber)':'var(--green)');
+  const xok=G('xml-ok'),xemp=G('xml-empty');if(xok)xok.style.display='block';if(xemp)xemp.style.display='none';
+  pXML=1;renderXML();
+}
+
+function renderXML(){
+  const filtro=(G('xml-fl-tipo')||{}).value||'';
+  const forn=(G('xml-fl-forn-sel')||{}).value||'';
+  const busca=((G('xml-fl-busca')||{}).value||'').toLowerCase();
+  const f=XML_ROWS.filter(function(r){
+    if(forn&&r.razao!==forn)return false;
+    if(busca&&!(r.razao+r.nfe_erp+r.chave_erp).toLowerCase().includes(busca))return false;
+    if(filtro==='ok')return r.status==='ok';
+    if(filtro==='sem_xml')return r.status==='sem_xml';
+    if(filtro==='divergente')return r.status==='divergente';
+    if(filtro==='div_ncm')return r.div_ncm;
+    if(filtro==='div_icms')return r.div_icms;
+    return true;
+  });
+  const tot=f.length,pgs=Math.ceil(tot/PG)||1;if(pXML>pgs)pXML=1;const sl=f.slice((pXML-1)*PG,pXML*PG);
+  const tb=G('xml-tb');
+  if(tb)tb.innerHTML=sl.map(function(r){
+    const gb=r.status==='ok'?'<span class="badge" style="background:var(--green-lt);color:var(--green)">✓ OK</span>':r.status==='sem_xml'?'<span class="badge b-amber">⚠ Sem XML</span>':[r.div_ncm?'<span class="badge b-red">≠ NCM</span>':'',r.div_icms?'<span class="badge b-amber">≠ ICMS</span>':'',r.div_aliq?'<span class="badge b-blue">≠ Alíq.</span>':''].filter(Boolean).join(' ');
+    const ds=Math.abs(r.diff_icms)<0.05?'color:var(--text3)':r.diff_icms<0?'color:var(--green);font-weight:600':'color:var(--red);font-weight:600';
+    return '<tr><td><span class="badge b-gray">L'+r.empresa+'</span></td><td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:11px" title="'+r.razao+'">'+r.razao+'</td><td style="font-family:monospace;font-size:10px;color:var(--text3)" title="'+r.chave_erp+'">'+(r.chave_erp?r.chave_erp.slice(-8)+'...':'—')+'</td><td class="td-dim">'+fmtD(r.emissao_erp)+'</td><td class="td-r">'+r.itens_erp+'</td><td style="'+(r.div_ncm?'color:var(--red);font-weight:700':'')+'">'+( r.ncm_xml||'—')+'</td><td style="'+(r.div_ncm?'color:var(--red)':'')+'">'+( r.ncm_erp||'—')+'</td><td class="td-r">'+(r.aliq_xml?r.aliq_xml+'%':'—')+'</td><td class="td-r">'+(r.aliq_erp?numAliq(r.aliq_erp)+'%':'—')+'</td><td class="td-r">'+(r.icms_xml?bS(r.icms_xml):'—')+'</td><td class="td-r">'+bS(r.icms_erp)+'</td><td style="text-align:right;'+ds+'">'+(Math.abs(r.diff_icms)<0.05&&r.status!=='sem_xml'?'—':(r.diff_icms>0?'+':'')+bS(r.diff_icms))+'</td><td>'+gb+'</td></tr>';
+  }).join('');
+  const sXML=f.reduce((s,r)=>s+r.icms_xml,0),sERP=f.reduce((s,r)=>s+r.icms_erp,0),sDiff=f.reduce((s,r)=>s+r.diff_icms,0);
+  const tf=G('xml-tf');if(tf)tf.innerHTML='<tr><td colspan="9">Total ('+tot.toLocaleString('pt-BR')+' NFs)</td><td class="td-r">'+bS(sXML)+'</td><td class="td-r">'+bS(sERP)+'</td><td style="text-align:right;font-weight:700;color:'+(Math.abs(sDiff)<0.05?'var(--text3)':sDiff<0?'var(--green)':'var(--red)')+'">'+( Math.abs(sDiff)<0.05?'—':(sDiff>0?'+':'')+bS(sDiff))+'</td><td></td></tr>';
+  const pi=G('xml-pi');if(pi)pi.textContent=((pXML-1)*PG+1)+'–'+Math.min(pXML*PG,tot)+' de '+tot.toLocaleString('pt-BR');
+  const pc=G('xml-pc');if(pc)pc.textContent=pXML+'/'+pgs;
+  const pv=G('xml-pv');if(pv)pv.disabled=pXML<=1;
+  const px=G('xml-px');if(px)px.disabled=pXML>=pgs;
+}
+function pgXML(d){pXML+=d;renderXML();}
+
+async function consultarTIPI(){
+  const btn=G('btn-tipi');if(btn)btn.disabled=true;
+  const ncms=[...new Set(XML_ROWS.filter(r=>r.ncm_xml).map(r=>r.ncm_xml).filter(Boolean).map(n=>n.replace(/[^0-9]/g,'')))].slice(0,20);
+  if(!ncms.length){alert('Nenhum NCM disponível para consultar.');if(btn)btn.disabled=false;return;}
+  const res=G('xml-tipi-res'),body=G('xml-tipi-body');
+  if(res)res.style.display='block';
+  if(body)body.innerHTML='<div style="padding:.5rem;font-size:12px;color:var(--text3)">Consultando '+ncms.length+' NCMs na BrasilAPI...</div>';
+  const results=[];
+  for(let i=0;i<ncms.length;i++){
+    const ncm=ncms[i];
+    try{const resp=await fetch('https://brasilapi.com.br/api/ncm/v1/'+ncm);if(resp.ok){const data=await resp.json();results.push({ncm,desc:data.descricao||'—',aliq:data.aliquota||'—',ok:true});}else{results.push({ncm,desc:'NCM não encontrado',aliq:'—',ok:false});}}
+    catch(e){results.push({ncm,desc:'Erro na consulta',aliq:'—',ok:false});}
+    if(body)body.innerHTML='<div style="padding:.5rem;font-size:12px;color:var(--text3)">Consultando '+(i+1)+'/'+ncms.length+': '+ncm+'...</div>';
+  }
+  if(body)body.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>NCM</th><th>Descrição TIPI</th><th class="td-r">IPI TIPI</th><th class="td-r">NFs</th></tr></thead><tbody>'+results.map(function(r){const count=XML_ROWS.filter(x=>(x.ncm_xml||'').replace(/[^0-9]/g,'')==r.ncm).length;return '<tr><td style="font-family:monospace;font-weight:600">'+r.ncm+'</td><td style="font-size:12px;color:'+(r.ok?'var(--text)':'var(--red)')+'">'+r.desc+'</td><td class="td-r">'+(r.aliq!=='—'?r.aliq+'%':'—')+'</td><td class="td-r">'+count+'</td></tr>';}).join('')+'</tbody></table></div><div style="font-size:10px;color:var(--text3);margin-top:.5rem">Fonte: BrasilAPI / Receita Federal. IPI ≠ ICMS. Use a descrição para confirmar a classificação do produto.</div>';
+  if(btn)btn.disabled=false;
+}
+
+function exportarXMLExcel(){
+  if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_exportarXMLExcel();document.head.appendChild(s);}else _exportarXMLExcel();
+}
+function _exportarXMLExcel(){
+  const wb=XLSX.utils.book_new();
+  const rows=[['Grupo','Loja','Fornecedor','Chave NF-e','NF','Emissão','Itens','NCM XML','NCM ERP','Alíq.XML%','Alíq.ERP%','ICMS XML','ICMS ERP','Diferença','Div.NCM','Div.ICMS']];
+  XML_ROWS.forEach(function(r){rows.push([r.status==='ok'?'OK':r.status==='sem_xml'?'Sem XML':'Divergente','Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.itens_erp,r.ncm_xml,r.ncm_erp,r.aliq_xml,numAliq(r.aliq_erp),+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2),r.div_ncm?'SIM':'NÃO',r.div_icms?'SIM':'NÃO']);});
+  const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:12},{wch:8},{wch:30},{wch:46},{wch:10},{wch:12},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:14},{wch:14},{wch:14},{wch:10},{wch:10}];
+  XLSX.utils.book_append_sheet(wb,ws,'Conferência');
+  const sem=XML_ROWS.filter(r=>r.status==='sem_xml');
+  const r2=[['Loja','Fornecedor','Chave NF-e','NF','Emissão','Itens','ICMS ERP']];
+  sem.forEach(function(r){r2.push(['Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.itens_erp,+r.icms_erp.toFixed(2)]);});
+  const ws2=XLSX.utils.aoa_to_sheet(r2);ws2['!cols']=[{wch:8},{wch:30},{wch:46},{wch:10},{wch:12},{wch:8},{wch:14}];
+  XLSX.utils.book_append_sheet(wb,ws2,'Sem XML ('+sem.length+')');
+  const divs=XML_ROWS.filter(r=>r.status==='divergente');
+  const r3=[['Loja','Fornecedor','NCM XML','NCM ERP','ICMS XML','ICMS ERP','Diferença','Divergências']];
+  divs.forEach(function(r){const tipos=[];if(r.div_ncm)tipos.push('NCM');if(r.div_icms)tipos.push('ICMS');if(r.div_aliq)tipos.push('Alíquota');r3.push(['Loja '+r.empresa,r.razao,r.ncm_xml,r.ncm_erp,+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2),tipos.join(' | ')]);});
+  const ws3=XLSX.utils.aoa_to_sheet(r3);ws3['!cols']=[{wch:8},{wch:30},{wch:10},{wch:10},{wch:14},{wch:14},{wch:14},{wch:20}];
+  XLSX.utils.book_append_sheet(wb,ws3,'Divergências ('+divs.length+')');
+  const d=new Date();XLSX.writeFile(wb,'Thalia_ConferenciaXML_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');
+}
+function limparXML(){XML_ROWS=[];XML_MAP_CHAVE={};const ok=G('xml-ok'),emp=G('xml-empty'),tr=G('xml-tipi-res'),xr=G('xml-resumo');if(ok)ok.style.display='none';if(emp)emp.style.display='block';if(tr)tr.style.display='none';if(xr)xr.innerHTML='';setMsg('xml','');const fi=G('fi-xml');if(fi)fi.value='';}
+
+// ── EXPORTAR PDF / EXCEL (stubs — funções completas embutidas acima) ──
+function gerarInsightsPDF(d){var tFat=d.tFat||0,tCred=d.tCred||0,saldo=d.saldo||0,tDevRC=d.tDevRC||0,credTotal=d.credTotal||0,tCupICMS=d.tCupICMS||0,tNfeICMS=d.tNfeICMS||0,tDevRD=d.tDevRD||0,tDevSD=d.tDevSD||0,tDeb=d.tDeb||0,aPagar=d.aPagar||0,sCr=d.sCr||0,dadosLoja=d.dadosLoja||[],tCupons=d.tCupons||0,tNfes=d.tNfes||0,tDevs=d.tDevs||0,tNfEntradas=d.tNfEntradas||0;var taxa=tFat>0?(aPagar/tFat*100):0;var aprov=tDeb>0?(credTotal/tDeb*100):0;var top=dadosLoja.length>0?dadosLoja[0]:null;var items=[];items.push({cor:'#1B4FD8',t:'Origem dos dados',x:'Esta apura\u00e7\u00e3o consolida <strong>'+tNfEntradas+' NFs de compras</strong> (<code>NF_COMPRA/NF_COMPRA_PRODUTOS</code>), <strong>'+tCupons.toLocaleString('pt-BR')+' cupons</strong> (<code>PDV_ITENS</code>), <strong>'+tNfes+' NF-e de venda</strong> (<code>NF_FATURAMENTO/NF_FATURAMENTO_TOTAIS</code>) e <strong>'+tDevs+' devolu\u00e7\u00f5es</strong> (<code>NF_COMPRA_DEVOLUCOES/NF_COMPRA_DEVOLUCOES_PRODUTOS</code>). Cancelamentos exclu\u00eddos via <code>NFE_CANCELAMENTOS (STATUS=4)</code>.'});var xc='Cr\u00e9dito bruto <strong>'+brl(tCred)+'</strong> = somat\u00f3rio de <code>GTE_ICMS_VALOR</code> (CFOPs 1.102/1.403/2.102/2.403). ';if(saldo>0)xc+='Saldo anterior: <strong>'+brl(saldo)+'</strong>. ';if(tDevRC>0)xc+='Estorno 5202/6202: <strong>(\u2212'+brl(tDevRC)+')</strong>. ';xc+='Cr\u00e9dito l\u00edquido: <strong>'+brl(credTotal)+'</strong>.';items.push({cor:'#0D7A5F',t:'Como foi calculado o cr\u00e9dito ICMS',x:xc});var xd='D\u00e9bito cupons: <strong>'+brl(tCupICMS)+'</strong>. D\u00e9bito NF-e: <strong>'+brl(tNfeICMS)+'</strong>. ';if(tDevRD>0)xd+='Dev 5411/6411: <strong>(\u2212'+brl(tDevRD)+')</strong>. ';xd+='D\u00e9bito l\u00edquido: <strong>'+brl(tDeb)+'</strong>.';items.push({cor:'#D62B2B',t:'Como foi calculado o d\u00e9bito ICMS',x:xd});if(aPagar>0){items.push({cor:'#D62B2B',t:'Resultado: ICMS a pagar',x:'<strong>'+brl(tDeb)+'</strong> \u2212 <strong>'+brl(credTotal)+'</strong> = <strong>'+brl(aPagar)+' a pagar</strong>. Taxa efetiva: <strong>'+taxa.toFixed(2)+'%</strong>.'});}else{items.push({cor:'#0D7A5F',t:'Resultado: saldo credor',x:'<strong>Saldo credor de '+brl(sCr)+'</strong> transferido para o pr\u00f3ximo per\u00edodo.'});}items.push({cor:'#1B4FD8',t:'Aproveitamento do cr\u00e9dito',x:'Cr\u00e9dito cobre <strong>'+aprov.toFixed(1)+'%</strong> do d\u00e9bito.'+(aprov<40?' \u00cdndice baixo esperado nos primeiros meses p\u00f3s-ST.':'')});if(top&&top.pagar>0&&dadosLoja.length>1){var pct2=aPagar>0?(top.pagar/aPagar*100):0;items.push({cor:'#92400E',t:'Destaque: Loja '+top.l,x:'Loja '+top.l+' concentra <strong>'+pct2.toFixed(1)+'%</strong> do ICMS ('+brl(top.pagar)+'). Taxa: '+top.pct.toFixed(2)+'%.'});}var out='<style>code{background:#F1F5F9;padding:1px 5px;border-radius:3px;font-size:10px;font-family:monospace;color:#1B4FD8}</style>';items.forEach(function(it){out+='<div style="display:flex;gap:.85rem;padding:.85rem 0;border-bottom:1px solid #E2E8F0"><div style="width:4px;background:'+it.cor+';border-radius:2px;flex-shrink:0;min-height:40px"></div><div><div style="font-size:11px;font-weight:700;color:#0D1117;margin-bottom:4px">'+it.t+'</div><div style="font-size:11px;color:#4A5568;line-height:1.7">'+it.x+'</div></div></div>';});out+='<div style="font-size:9px;color:#94A3B8;border-top:1px solid #E2E8F0;padding-top:.6rem;margin-top:.75rem"><strong>Fontes:</strong> NF_COMPRA/NF_COMPRA_PRODUTOS | PDV_ITENS | NF_FATURAMENTO/NF_FATURAMENTO_TOTAIS | NF_COMPRA_DEVOLUCOES | NFE_CANCELAMENTOS(STATUS=4)</div>';return out;}
+function _mkPDFHeader(s,sub,dest){return '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2rem;padding-bottom:1rem;border-bottom:2px solid #0D1117"><div><div style="font-size:22px;font-weight:700">Thalia <span style="color:#00B5A3">ICMS</span></div><div style="font-size:11px;color:#64748B;margin-top:4px">'+sub+'</div></div><div style="text-align:right;font-size:12px;color:#64748B"><div style="font-weight:600;color:#0D1117">'+dest+'</div><div>'+new Date().toLocaleDateString('pt-BR',{day:'2-digit',month:'long',year:'numeric'})+'</div></div></div>';}
+function _pdfBase(){return '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,sans-serif;font-size:13px;color:#0D1117;padding:2.5rem;background:#fff}table{width:100%;border-collapse:collapse;font-size:12px}th{padding:8px 10px;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#94A3B8;text-align:left;border-bottom:1px solid #DDE3EC;background:#F8FAFC}td{padding:8px 10px;border-bottom:1px solid #DDE3EC}tr:last-child td{border-bottom:none}tfoot td{font-weight:700;background:#F8FAFC;border-top:2px solid #DDE3EC}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}.kpi{border:1px solid #DDE3EC;border-radius:8px;padding:.85rem 1rem}.kl{font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#8896A5;margin-bottom:4px}.kv{font-size:17px;font-weight:700}.kvg{color:#0D7A5F}.kvr{color:#D62B2B}.kvd{color:#64748B}.card{border:1px solid #DDE3EC;border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:1rem}.ap-p{background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:1.5rem;margin-bottom:1.25rem}.ap-c{background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;padding:1.5rem;margin-bottom:1.25rem}.sec-title{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#64748B;margin:1.75rem 0 .75rem;padding-bottom:.5rem;border-bottom:1px solid #DDE3EC}.ftr{margin-top:2rem;padding-top:1rem;border-top:1px solid #E2E8F0;display:flex;justify-content:space-between;font-size:10px;color:#94A3B8}@media print{body{padding:1.5rem}@page{margin:1.5cm;size:A4}}</style></head><body>';}
+function exportarPDF(){var lj=G('ap-lj');if(!lj)return;var ljNome=lj.options[lj.selectedIndex].text,saldo=parseFloat((G('ap-saldo')||{}).value)||0;var eRows=lj.value?E_ROWS.filter(r=>String(r.empresa)===lj.value):E_ROWS;var eNotas=lj.value?E_NOTAS.filter(n=>String(n.empresa)===lj.value):E_NOTAS;var sCup=lj.value?S_CUP.filter(r=>String(r.loja)===lj.value):S_CUP;var sNfe=lj.value?S_NFE.filter(r=>String(r.loja)===lj.value):S_NFE;var devLj=lj.value?S_DEV.filter(r=>String(r.loja)===lj.value):S_DEV;var tCred=eRows.reduce((s,r)=>s+r.icms,0),tEBC=eRows.reduce((s,r)=>s+r.bc,0),tENF=eNotas.reduce((s,n)=>s+n.total,0);var tDevRC=devLj.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var tDevRD=devLj.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0);var tDevSD=devLj.filter(r=>r.impacto==='SOMA_DEBITO').reduce((s,r)=>s+r.icms,0);var credTotal=tCred+saldo-tDevRC;var tCupICMS=sCup.reduce((s,r)=>s+r.icms,0),tNfeICMS=sNfe.reduce((s,r)=>s+r.icms,0),tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD;var aPagar=Math.max(0,tDeb-credTotal),sCr=Math.max(0,credTotal-tDeb),tFat=sCup.reduce((s,r)=>s+r.fat,0)+sNfe.reduce((s,r)=>s+r.total,0);var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var dL=lojas.map(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);return{l,fat,credLiq:c-dRC,debLiq:db-dRD,devRD:dRD,devRC:dRC,pagar:Math.max(0,(db-dRD)-(c-dRC)),pct:fat>0?((db-dRD)/fat*100):0};}).sort((a,b)=>b.pagar-a.pagar);var iH=gerarInsightsPDF({tFat,tCred,saldo,tDevRC,credTotal,tCupICMS,tNfeICMS,tDevRD,tDevSD,tDeb,aPagar,sCr,lojas,dadosLoja:dL,tCupons:sCup.reduce((s,r)=>s+r.cupons,0),tNfes:sNfe.length,tDevs:devLj.length,tNfEntradas:eNotas.length});var mem='<div class="card"><div style="font-size:9px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#94A3B8;margin-bottom:.85rem">Memória de Cálculo</div><table>'+'<tr><td>Total NFs compras (ref.)</td><td style="text-align:right">'+brl(tENF)+'</td></tr>'+'<tr><td>BC ICMS entradas</td><td style="text-align:right;color:#1B4FD8">'+brl(tEBC)+'</td></tr>'+'<tr><td style="font-weight:600">Crédito ICMS entradas</td><td style="text-align:right;color:#0D7A5F;font-weight:600">'+brl(tCred)+'</td></tr>'+'<tr><td>(+) Saldo credor anterior</td><td style="text-align:right;color:#1B4FD8;font-weight:600">'+brl(saldo)+'</td></tr>'+(tDevRC>0?'<tr style="background:#FFFBEB"><td style="color:#92400E">(\u2212) Estorno 5202/6202</td><td style="text-align:right;color:#92400E;font-weight:600">('+brl(tDevRC)+')</td></tr>':'')+'<tr style="border-top:1px solid #DDE3EC"><td style="font-weight:600">= Crédito líquido</td><td style="text-align:right;color:#0D7A5F;font-weight:600">'+brl(credTotal)+'</td></tr>'+'<tr><td>Débito cupons</td><td style="text-align:right;color:#D62B2B;font-weight:600">('+brl(tCupICMS)+')</td></tr>'+'<tr><td>Débito NF-e</td><td style="text-align:right;color:#D62B2B;font-weight:600">('+brl(tNfeICMS)+')</td></tr>'+(tDevSD>0?'<tr style="background:#FEF2F2"><td style="color:#D62B2B">(+) Outras saídas 5949/6949</td><td style="text-align:right;color:#D62B2B;font-weight:600">('+brl(tDevSD)+')</td></tr>':'')+(tDevRD>0?'<tr style="background:#ECFDF5"><td style="color:#0D7A5F">(\u2212) Dev. venda 5411/6411</td><td style="text-align:right;color:#0D7A5F;font-weight:600">\u2212 '+brl(tDevRD)+'</td></tr>':'')+'<tr style="border-top:1px solid #DDE3EC"><td style="font-weight:600">= Débito líquido</td><td style="text-align:right;color:#D62B2B;font-weight:600">('+brl(tDeb)+')</td></tr>'+'<tr style="border-top:2px solid #DDE3EC"><td style="font-weight:700;font-size:14px">RESULTADO</td><td style="text-align:right;font-weight:700;font-size:14px;color:'+(aPagar>0?'#D62B2B':'#0D7A5F')+'">'+(aPagar>0?brl(aPagar)+' a pagar':brl(sCr)+' saldo credor')+'</td></tr>'+'</table></div>';var resBox=aPagar>0?'<div class="ap-p"><div style="font-size:9px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#D62B2B;margin-bottom:.3rem">\u26a0 ICMS A PAGAR</div><div style="font-size:36px;font-weight:700;color:#D62B2B;margin:.15rem 0">'+brl(aPagar)+'</div><div style="font-size:12px;color:#94A3B8">Débito '+brl(tDeb)+' \u2212 Crédito '+brl(credTotal)+'</div></div>':'<div class="ap-c"><div style="font-size:9px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#0D7A5F;margin-bottom:.3rem">\u2713 SALDO CREDOR</div><div style="font-size:36px;font-weight:700;color:#0D7A5F;margin:.15rem 0">'+brl(sCr)+'</div><div style="font-size:12px;color:#94A3B8">Transfere para o próximo período</div></div>';var w=window.open('','_blank','width=920,height=750');w.document.write(_pdfBase()+_mkPDFHeader('','Apurador Fiscal p\u00f3s 01/04/2026',ljNome)+'<h1 style="font-size:18px;font-weight:700;margin-bottom:1.5rem">Apura\u00e7\u00e3o de ICMS</h1>'+'<div class="kpis"><div class="kpi"><div class="kl">Faturamento</div><div class="kv kvd">'+brl(tFat)+'</div></div><div class="kpi"><div class="kl">Crédito líquido</div><div class="kv kvg">'+brl(credTotal)+'</div></div><div class="kpi"><div class="kl">Débito líquido</div><div class="kv kvr">'+brl(tDeb)+'</div></div><div class="kpi"><div class="kl">ICMS a pagar</div><div class="kv '+(aPagar>0?'kvr':'kvg')+'">'+brl(aPagar>0?aPagar:sCr)+'</div></div></div>'+resBox+mem+'<div class="sec-title">Notas explicativas</div>'+iH+'<div class="ftr"><span>Thalia Perfumaria \u00b7 Apurador de ICMS</span><span>'+new Date().toLocaleString('pt-BR')+'</span></div></body></html>');w.document.close();}
+function exportarLjPDF(){var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var dados=lojas.map(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);var pagar=Math.max(0,(db-dRD)-(c-dRC)),scred=Math.max(0,(c-dRC)-(db-dRD)),pct=fat>0?((db-dRD)/fat*100):0;return{l,fat,cred:c,credLiq:c-dRC,deb:db,debLiq:db-dRD,devRD:dRD,devRC:dRC,pagar,scred,pct};}).sort((a,b)=>b.pagar-a.pagar);var tF=dados.reduce((s,d)=>s+d.fat,0),tC=dados.reduce((s,d)=>s+d.credLiq,0),tD=dados.reduce((s,d)=>s+d.debLiq,0),tP=dados.reduce((s,d)=>s+d.pagar,0);var saldo=parseFloat((G('ap-saldo')||{}).value)||0;var iH=gerarInsightsPDF({tFat:tF,tCred:dados.reduce((s,d)=>s+d.cred,0),saldo,tDevRC:dados.reduce((s,d)=>s+d.devRC,0),credTotal:tC,tCupICMS:S_CUP.reduce((s,r)=>s+r.icms,0),tNfeICMS:S_NFE.reduce((s,r)=>s+r.icms,0),tDevRD:dados.reduce((s,d)=>s+d.devRD,0),tDevSD:0,tDeb:tD,aPagar:tP,sCr:dados.reduce((s,d)=>s+d.scred,0),lojas,dadosLoja:dados,tCupons:S_CUP.reduce((s,r)=>s+r.cupons,0),tNfes:S_NFE.length,tDevs:S_DEV.length,tNfEntradas:E_NOTAS.length});var rows=dados.map(function(d){return '<tr><td style="font-weight:600">Loja '+d.l+'</td><td style="text-align:right">'+brl(d.fat)+'</td><td style="text-align:right;color:#0D7A5F;font-weight:600">'+brl(d.credLiq)+'</td><td style="text-align:right;color:#D62B2B;font-weight:600">'+brl(d.debLiq)+'</td><td style="text-align:right;color:#0D7A5F">'+(d.devRD>0?brl(d.devRD):'\u2014')+'</td><td style="text-align:right;color:#92400E">'+(d.devRC>0?brl(d.devRC):'\u2014')+'</td><td style="text-align:right;font-weight:700;color:'+(d.pagar>0?'#D62B2B':'#0D7A5F')+'">'+(d.pagar>0?brl(d.pagar):brl(d.scred)+' credor')+'</td><td style="text-align:right">'+d.pct.toFixed(2)+'%</td></tr>';}).join('');var w=window.open('','_blank','width=960,height=750');var base=_pdfBase().replace('@page{margin:1.5cm;size:A4}','@page{margin:1.5cm;size:A4 landscape}');w.document.write(base+_mkPDFHeader('','Apurador Fiscal p\u00f3s 01/04/2026','Relat\u00f3rio por Loja')+'<h1 style="font-size:18px;font-weight:700;margin-bottom:1.5rem">ICMS por Loja</h1><div style="background:#F8FAFC;border:1px solid #DDE3EC;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;gap:1.5rem"><div style="font-size:11px"><span style="background:#E6F9F5;color:#0D7A5F;padding:1px 8px;border-radius:20px;font-size:10px;font-weight:700">5411/6411</span> Reduz débito</div><div style="font-size:11px"><span style="background:#FFFBEB;color:#92400E;padding:1px 8px;border-radius:20px;font-size:10px;font-weight:700">5202/6202</span> Reduz crédito</div></div><table><thead><tr><th>Loja</th><th style="text-align:right">Faturamento</th><th style="text-align:right">Crédito L.</th><th style="text-align:right">Débito L.</th><th style="text-align:right">Dev.Déb</th><th style="text-align:right">Dev.Créd</th><th style="text-align:right">ICMS Pagar</th><th style="text-align:right">% Déb/Fat</th></tr></thead><tbody>'+rows+'</tbody><tfoot><tr><td>Total</td><td style="text-align:right">'+brl(tF)+'</td><td style="text-align:right;color:#0D7A5F;font-weight:700">'+brl(tC)+'</td><td style="text-align:right;color:#D62B2B;font-weight:700">'+brl(tD)+'</td><td style="text-align:right;color:#0D7A5F">'+brl(dados.reduce((s,d)=>s+d.devRD,0))+'</td><td style="text-align:right;color:#92400E">'+brl(dados.reduce((s,d)=>s+d.devRC,0))+'</td><td style="text-align:right;color:#D62B2B;font-weight:700">'+brl(tP)+'</td><td></td></tr></tfoot></table><div class="sec-title">Notas explicativas</div>'+iH+'<div class="ftr"><span>Thalia Perfumaria</span><span>'+new Date().toLocaleString('pt-BR')+'</span></div></body></html>');w.document.close();}
+function exportarDashPDF(){var saldo=parseFloat((G('ap-saldo')||{}).value)||0;var tCred=E_ROWS.reduce((s,r)=>s+r.icms,0);var tCupICMS=S_CUP.reduce((s,r)=>s+r.icms,0),tNfeICMS=S_NFE.reduce((s,r)=>s+r.icms,0);var tDevRD=S_DEV.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),tDevRC=S_DEV.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0),tDevSD=S_DEV.filter(r=>r.impacto==='SOMA_DEBITO').reduce((s,r)=>s+r.icms,0);var credTotal=tCred+saldo-tDevRC,tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD;var aPagar=Math.max(0,tDeb-credTotal),sCr=Math.max(0,credTotal-tDeb),tFat=S_CUP.reduce((s,r)=>s+r.fat,0)+S_NFE.reduce((s,r)=>s+r.total,0);var taxa=tFat>0?(aPagar/tFat*100):0,aprov=tDeb>0?(credTotal/tDeb*100):0;var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var dL=lojas.map(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);return{l,fat,credLiq:c-dRC,debLiq:db-dRD,devRD:dRD,devRC:dRC,pagar:Math.max(0,(db-dRD)-(c-dRC)),pct:fat>0?((db-dRD)/fat*100):0};}).sort((a,b)=>b.pagar-a.pagar);var iH=gerarInsightsPDF({tFat,tCred,saldo,tDevRC,credTotal,tCupICMS,tNfeICMS,tDevRD,tDevSD,tDeb,aPagar,sCr,lojas,dadosLoja:dL,tCupons:S_CUP.reduce((s,r)=>s+r.cupons,0),tNfes:S_NFE.length,tDevs:S_DEV.length,tNfEntradas:E_NOTAS.length});var rows=dL.map(function(d){return '<tr><td style="font-weight:600">Loja '+d.l+'</td><td style="text-align:right">'+brl(d.fat)+'</td><td style="text-align:right;color:#0D7A5F;font-weight:600">'+brl(d.credLiq)+'</td><td style="text-align:right;color:#D62B2B;font-weight:600">'+brl(d.debLiq)+'</td><td style="text-align:right;color:#0D7A5F">'+(d.devRD>0?brl(d.devRD):'\u2014')+'</td><td style="text-align:right;color:#92400E">'+(d.devRC>0?brl(d.devRC):'\u2014')+'</td><td style="text-align:right;font-weight:700;color:'+(d.pagar>0?'#D62B2B':'#0D7A5F')+'">'+(d.pagar>0?brl(d.pagar):'Credor')+'</td><td style="text-align:right">'+d.pct.toFixed(2)+'%</td></tr>';}).join('');var tTF=dL.reduce((s,d)=>s+d.fat,0),tTC=dL.reduce((s,d)=>s+d.credLiq,0),tTD=dL.reduce((s,d)=>s+d.debLiq,0),tTRD=dL.reduce((s,d)=>s+d.devRD,0),tTRC=dL.reduce((s,d)=>s+d.devRC,0);var base=_pdfBase().replace('@page{margin:1.5cm;size:A4}','@page{margin:1.5cm;size:A4 landscape}');var w=window.open('','_blank','width=960,height=750');w.document.write(base+_mkPDFHeader('','Dashboard Fiscal','Dashboard ICMS')+'<div class="kpis" style="margin-top:1.5rem"><div class="kpi"><div class="kl">Faturamento</div><div class="kv kvd">'+brl(tFat)+'</div></div><div class="kpi"><div class="kl">Crédito líquido</div><div class="kv kvg">'+brl(credTotal)+'</div></div><div class="kpi"><div class="kl">Débito líquido</div><div class="kv kvr">'+brl(tDeb)+'</div></div><div class="kpi"><div class="kl">ICMS a pagar</div><div class="kv kvr">'+brl(aPagar)+'</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem"><div style="border:1px solid #DDE3EC;border-radius:8px;padding:.85rem 1rem"><div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#8896A5;margin-bottom:4px">Taxa efetiva</div><div style="font-size:20px;font-weight:700">'+taxa.toFixed(2)+'%</div></div><div style="border:1px solid #DDE3EC;border-radius:8px;padding:.85rem 1rem"><div style="font-size:9px;font-weight:700;text-transform:uppercase;color:#8896A5;margin-bottom:4px">Aproveitamento crédito</div><div style="font-size:20px;font-weight:700">'+aprov.toFixed(1)+'%</div></div></div><div class="sec-title">Resultado por loja</div><table><thead><tr><th>Loja</th><th style="text-align:right">Faturamento</th><th style="text-align:right">Crédito L.</th><th style="text-align:right">Débito L.</th><th style="text-align:right">Dev.Déb</th><th style="text-align:right">Dev.Créd</th><th style="text-align:right">ICMS Pagar</th><th style="text-align:right">% Déb/Fat</th></tr></thead><tbody>'+rows+'</tbody><tfoot><tr><td>Total</td><td style="text-align:right">'+brl(tTF)+'</td><td style="text-align:right;color:#0D7A5F">'+brl(tTC)+'</td><td style="text-align:right;color:#D62B2B">'+brl(tTD)+'</td><td style="text-align:right;color:#0D7A5F">'+brl(tTRD)+'</td><td style="text-align:right;color:#92400E">'+brl(tTRC)+'</td><td style="text-align:right;color:#D62B2B;font-weight:700">'+brl(aPagar)+'</td><td></td></tr></tfoot></table><div class="sec-title">Notas explicativas</div>'+iH+'<div class="ftr"><span>Thalia Perfumaria</span><span>'+new Date().toLocaleString('pt-BR')+'</span></div></body></html>');w.document.close();}
+function exportarExcel(){if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_gerarExcel();document.head.appendChild(s);}else{_gerarExcel();}}
+function _gerarExcel(){var lj=G('ap-lj');if(!lj)return;var saldo=parseFloat((G('ap-saldo')||{}).value)||0;var eRows=lj.value?E_ROWS.filter(r=>String(r.empresa)===lj.value):E_ROWS;var eNotas=lj.value?E_NOTAS.filter(n=>String(n.empresa)===lj.value):E_NOTAS;var sCup=lj.value?S_CUP.filter(r=>String(r.loja)===lj.value):S_CUP;var sNfe=lj.value?S_NFE.filter(r=>String(r.loja)===lj.value):S_NFE;var devLj=lj.value?S_DEV.filter(r=>String(r.loja)===lj.value):S_DEV;var tCred=eRows.reduce((s,r)=>s+r.icms,0);var tDevRC=devLj.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var tDevRD=devLj.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0);var tDevSD=devLj.filter(r=>r.impacto==='SOMA_DEBITO').reduce((s,r)=>s+r.icms,0);var credTotal=tCred+saldo-tDevRC;var tCupICMS=sCup.reduce((s,r)=>s+r.icms,0),tNfeICMS=sNfe.reduce((s,r)=>s+r.icms,0),tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD;var aPagar=Math.max(0,tDeb-credTotal),sCr=Math.max(0,credTotal-tDeb),tFat=sCup.reduce((s,r)=>s+r.fat,0)+sNfe.reduce((s,r)=>s+r.total,0);var tEBC=eRows.reduce((s,r)=>s+r.bc,0),tENF=eNotas.reduce((s,n)=>s+n.total,0);var wb=XLSX.utils.book_new();var resumo=[['APURAÇÃO DE ICMS — THALIA PERFUMARIA'],[''],['ENTRADAS (CRÉDITO)'],['Total NFs compras',+tENF.toFixed(2)],['BC ICMS entradas',+tEBC.toFixed(2)],['Crédito ICMS',+tCred.toFixed(2)],['Saldo credor anterior',+saldo.toFixed(2)],['Estorno 5202/6202',+tDevRC.toFixed(2)],['= Crédito líquido',+credTotal.toFixed(2)],[''],['SAÍDAS (DÉBITO)'],['Débito cupons',+tCupICMS.toFixed(2)],['Débito NF-e',+tNfeICMS.toFixed(2)],['Dev 5411/6411 (reduz)',+tDevRD.toFixed(2)],['= Débito líquido',+tDeb.toFixed(2)],[''],['RESULTADO'],['ICMS a pagar',+aPagar.toFixed(2)],['Saldo credor',+sCr.toFixed(2)]];var wsR=XLSX.utils.aoa_to_sheet(resumo);wsR['!cols']=[{wch:35},{wch:20}];XLSX.utils.book_append_sheet(wb,wsR,'Apuração');var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var ljRows=[['Loja','Faturamento','Credito Liq','Debito Liq','Dev Reduz Deb','Dev Reduz Cred','ICMS a Pagar','Saldo Credor','% Deb/Fat']];lojas.forEach(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);var pagar=Math.max(0,(db-dRD)-(c-dRC)),sc=Math.max(0,(c-dRC)-(db-dRD));var pct=fat>0?((db-dRD)/fat*100):0;ljRows.push(['Loja '+l,+fat.toFixed(2),+(c-dRC).toFixed(2),+(db-dRD).toFixed(2),+dRD.toFixed(2),+dRC.toFixed(2),+pagar.toFixed(2),+sc.toFixed(2),+pct.toFixed(2)]);});var wsL=XLSX.utils.aoa_to_sheet(ljRows);wsL['!cols']=[{wch:10},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:12}];XLSX.utils.book_append_sheet(wb,wsL,'Por Loja');var nfRows=[['NFe','NF_Compra','Loja','Fornecedor','CFOP','Emissao','Status','Total NF','BC ICMS','ICMS','IPI']];eNotas.forEach(n=>nfRows.push([n.nfe,n.nf_compra,'Loja '+n.empresa,n.razao,n.cfop,fmtD(n.emissao),n.processar,+n.total.toFixed(2),+n.bc.toFixed(2),+n.icms.toFixed(2),+(n.ipi||0).toFixed(2)]));var wsNF=XLSX.utils.aoa_to_sheet(nfRows);wsNF['!cols']=[{wch:20},{wch:12},{wch:8},{wch:28},{wch:8},{wch:12},{wch:10},{wch:16},{wch:16},{wch:16},{wch:12}];XLSX.utils.book_append_sheet(wb,wsNF,'NFs Entradas');var d=new Date();XLSX.writeFile(wb,'Thalia_ICMS_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');}
+function exportarLjExcel(){if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_exportarLjExcel();document.head.appendChild(s);}else _exportarLjExcel();}
+function _exportarLjExcel(){var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var wb=XLSX.utils.book_new();var rows=[['Loja','Faturamento','Credito ICMS','Credito Liq','Debito ICMS','Debito Liq','Dev Reduz Deb','Dev Reduz Cred','ICMS a Pagar','Saldo Credor','% Deb/Fat']];lojas.forEach(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);var pagar=Math.max(0,(db-dRD)-(c-dRC)),sc=Math.max(0,(c-dRC)-(db-dRD)),pct=fat>0?((db-dRD)/fat*100):0;rows.push(['Loja '+l,+fat.toFixed(2),+c.toFixed(2),+(c-dRC).toFixed(2),+db.toFixed(2),+(db-dRD).toFixed(2),+dRD.toFixed(2),+dRC.toFixed(2),+pagar.toFixed(2),+sc.toFixed(2),+pct.toFixed(2)]);});var ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:10},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:12}];XLSX.utils.book_append_sheet(wb,ws,'Por Loja');var d=new Date();XLSX.writeFile(wb,'Thalia_ICMS_PorLoja_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');}
+function exportarDashExcel(){if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_exportarDashExcel();document.head.appendChild(s);}else _exportarDashExcel();}
+function _exportarDashExcel(){var saldo=parseFloat((G('ap-saldo')||{}).value)||0;var tCred=E_ROWS.reduce((s,r)=>s+r.icms,0);var tCupICMS=S_CUP.reduce((s,r)=>s+r.icms,0),tNfeICMS=S_NFE.reduce((s,r)=>s+r.icms,0);var tDevRD=S_DEV.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),tDevRC=S_DEV.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0),tDevSD=S_DEV.filter(r=>r.impacto==='SOMA_DEBITO').reduce((s,r)=>s+r.icms,0);var credTotal=tCred+saldo-tDevRC,tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD;var aPagar=Math.max(0,tDeb-credTotal),sCr=Math.max(0,credTotal-tDeb),tFat=S_CUP.reduce((s,r)=>s+r.fat,0)+S_NFE.reduce((s,r)=>s+r.total,0);var wb=XLSX.utils.book_new();var kR=[['DASHBOARD THALIA PERFUMARIA'],[''],['Faturamento total',+tFat.toFixed(2)],['Credito liquido',+credTotal.toFixed(2)],['Debito liquido',+tDeb.toFixed(2)],['ICMS a pagar',+aPagar.toFixed(2)],['Taxa efetiva (%)',tFat>0?+((aPagar/tFat)*100).toFixed(2):0],['Aproveitamento (%)',tDeb>0?+((credTotal/tDeb)*100).toFixed(1):0]];var wsK=XLSX.utils.aoa_to_sheet(kR);wsK['!cols']=[{wch:35},{wch:20}];XLSX.utils.book_append_sheet(wb,wsK,'KPIs');var lojas=Object.keys(ALL_LOJAS).sort((a,b)=>+a-+b);var lR=[['Loja','Faturamento','Credito Liq','Debito Liq','Dev Reduz Deb','Dev Reduz Cred','ICMS a Pagar','Saldo Credor','% Deb/Fat']];lojas.forEach(l=>{var er=E_ROWS.filter(r=>String(r.empresa)===l),cr=S_CUP.filter(r=>String(r.loja)===l),nr=S_NFE.filter(r=>String(r.loja)===l),dr=S_DEV.filter(r=>String(r.loja)===l);var c=er.reduce((s,r)=>s+r.icms,0),db=cr.reduce((s,r)=>s+r.icms,0)+nr.reduce((s,r)=>s+r.icms,0);var dRD=dr.filter(r=>r.impacto==='REDUZ_DEBITO').reduce((s,r)=>s+r.icms,0),dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);var fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);var pagar=Math.max(0,(db-dRD)-(c-dRC)),sc=Math.max(0,(c-dRC)-(db-dRD));var pct=fat>0?((db-dRD)/fat*100):0;lR.push(['Loja '+l,+fat.toFixed(2),+(c-dRC).toFixed(2),+(db-dRD).toFixed(2),+dRD.toFixed(2),+dRC.toFixed(2),+pagar.toFixed(2),+sc.toFixed(2),+pct.toFixed(2)]);});var wsL=XLSX.utils.aoa_to_sheet(lR);wsL['!cols']=[{wch:10},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:12}];XLSX.utils.book_append_sheet(wb,wsL,'Por Loja');var d=new Date();XLSX.writeFile(wb,'Thalia_ICMS_Dashboard_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');}
+function exportarXMLExcel(){if(!window.XLSX){const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>_exportarXMLExcel();document.head.appendChild(s);}else _exportarXMLExcel();}
+function _exportarXMLExcel(){var wb=XLSX.utils.book_new();var rows=[['Grupo','Loja','Fornecedor','Chave NF-e','NF','Emissão','Itens','NCM XML','NCM ERP','Aliq.XML%','Aliq.ERP%','ICMS XML','ICMS ERP','Diferença','Div.NCM','Div.ICMS']];XML_ROWS.forEach(function(r){rows.push([r.status==='ok'?'OK':r.status==='sem_xml'?'Sem XML':'Divergente','Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.itens_erp,r.ncm_xml,r.ncm_erp,r.aliq_xml,numAliq(r.aliq_erp),+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2),r.div_ncm?'SIM':'NÃO',r.div_icms?'SIM':'NÃO']);});var ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[{wch:12},{wch:8},{wch:30},{wch:46},{wch:10},{wch:12},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:14},{wch:14},{wch:14},{wch:10},{wch:10}];XLSX.utils.book_append_sheet(wb,ws,'Conferência');var sem=XML_ROWS.filter(r=>r.status==='sem_xml');var r2=[['Loja','Fornecedor','Chave NF-e','NF','Emissão','Itens','ICMS ERP']];sem.forEach(function(r){r2.push(['Loja '+r.empresa,r.razao,r.chave_erp,r.nfe_erp,fmtD(r.emissao_erp),r.itens_erp,+r.icms_erp.toFixed(2)]);});var ws2=XLSX.utils.aoa_to_sheet(r2);XLSX.utils.book_append_sheet(wb,ws2,'Sem XML ('+sem.length+')');var divs=XML_ROWS.filter(r=>r.status==='divergente');var r3=[['Loja','Fornecedor','NCM XML','NCM ERP','ICMS XML','ICMS ERP','Diferença']];divs.forEach(function(r){r3.push(['Loja '+r.empresa,r.razao,r.ncm_xml,r.ncm_erp,+r.icms_xml.toFixed(2),+r.icms_erp.toFixed(2),+r.diff_icms.toFixed(2)]);});var ws3=XLSX.utils.aoa_to_sheet(r3);XLSX.utils.book_append_sheet(wb,ws3,'Divergências ('+divs.length+')');var d=new Date();XLSX.writeFile(wb,'Thalia_ConferenciaXML_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.xlsx');}
+function limparE(){E_ROWS=[];E_NOTAS=[];const eo=G('e-ok');if(eo)eo.style.display='none';setMsg('e','');const fi=G('fi-e');if(fi)fi.value='';atualizarHd();}
+function limparS(){S_CUP=[];S_NFE=[];const so=G('s-ok'),dm=G('dev-metrics');if(so)so.style.display='none';if(dm)dm.style.display='none';setMsg('cup','');setMsg('nfe','');const fc=G('fi-cup'),fn=G('fi-nfe');if(fc)fc.value='';if(fn)fn.value='';atualizarHd();}
+
+</script>
+</body></html>
