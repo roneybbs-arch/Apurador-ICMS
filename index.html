@@ -1585,8 +1585,19 @@ function cruzarERPcomXML(errosXML){
       if(erpItem)erpUsados.add(erpItem);
 
       // Comparar NCM
-      const ncmXML=(xi.ncm||'').replace(/[^0-9]/g,'').replace(/^0+/,'');
-      const ncmERP=erpItem?(erpItem.ncm||'').replace(/[^0-9]/g,'').replace(/^0+/,''):'';
+      // Normalizar NCM: float "33072090.0" → int "33072090" → 8 dígitos
+      function normNCM(v){
+        if(!v||v==='nan'||v==='')return'';
+        var s=String(v).trim();
+        // Se for número float (ex: "33072090.0"), converter via parseFloat→int primeiro
+        if(/^[0-9]+\.0+$/.test(s)) s=String(Math.round(parseFloat(s)));
+        // Remover pontos e traços (formato "3307.20.10")
+        s=s.replace(/[^0-9]/g,'');
+        // Garantir 8 dígitos (NCM brasileiro tem 8 dígitos)
+        return s.padStart(8,'0').slice(-8);
+      }
+      const ncmXML=normNCM(xi.ncm);
+      const ncmERP=erpItem?normNCM(erpItem.ncm):'';
       const div_ncm=!!(ncmXML&&ncmERP&&ncmXML!==ncmERP);
 
       // Comparar ICMS
