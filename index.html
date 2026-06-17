@@ -924,9 +924,23 @@ function processarEntradas(raw){
   const aliqEl=G('e-aliq-dist');
   if(aliqEl)aliqEl.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>Alíquota</th><th class="td-r">Itens</th><th class="td-r">BC ICMS</th><th class="td-r">Crédito ICMS</th><th class="td-r">%</th></tr></thead><tbody>'+Object.entries(am).sort((a,b)=>parseFloat(b)-parseFloat(a)).map(([k,v])=>'<tr><td><span class="badge b-blue">'+k+'</span></td><td class="td-r">'+v.n.toLocaleString('pt-BR')+'</td><td class="td-b">'+bS(v.bc)+'</td><td class="td-g">'+bS(v.icms)+'</td><td class="td-r">'+pct(v.icms,tICMS)+'</td></tr>').join('')+'</tbody></table></div>';
 
+  // ── VALIDAÇÃO CRÍTICA: detectar múltiplos meses no arquivo ──
+  // Se o CSV trouxer mais de um mês (ex: Query 6 com mês atual + anterior),
+  // isso duplica crédito na Apuração Final. Avisar e oferecer filtro.
+  const mesesUnicos = new Set();
+  E_ROWS.forEach(r=>{
+    const d = new Date(r.emissao || r.movimento);
+    if(!isNaN(d)) mesesUnicos.add(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));
+  });
   const eOk=G('e-ok');if(eOk)eOk.style.display='block';
   setProg('e',100,'Concluído!');
-  setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens · '+E_NOTAS.length+' NFs carregadas.','var(--green)');
+
+  if(mesesUnicos.size>1){
+    const mesesArr=[...mesesUnicos].sort();
+    setMsg('e','⚠ ATENÇÃO: o arquivo contém '+mesesUnicos.size+' meses diferentes ('+mesesArr.join(', ')+'). Isso DUPLICA o crédito na Apuração Final se forem somados indevidamente! Se este arquivo veio da Query 6 (para Conferência XML), use-o SOMENTE na aba Conferência XML. Para a Apuração Final, importe um arquivo filtrado para 1 mês apenas (Query 1, ou Query 6 com WHERE ajustado).','var(--red)');
+  } else {
+    setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens · '+E_NOTAS.length+' NFs carregadas.','var(--green)');
+  }
   setTimeout(()=>{const pw=G('pw-e');if(pw)pw.style.display='none';},600);
   atualizarHd();atualizarApLj();
 }
