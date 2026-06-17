@@ -1005,6 +1005,48 @@ function eNotasApuracao(){
   return E_NOTAS.filter(n=>setNF.has(n.nfe||n.nf_compra));
 }
 
+// Filtra XML_ROWS pelo mesmo mês de apuração (usa movimento_erp, fallback emissao_erp)
+function xmlRowsApuracao(){
+  if(!MES_APURACAO) return XML_ROWS;
+  return XML_ROWS.filter(r=>{
+    const d = new Date(r.movimento_erp || r.emissao_erp);
+    if(isNaN(d)) return false;
+    const k = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    return k === MES_APURACAO;
+  });
+}
+
+// Calcula o crédito de ICMS conforme os XMLs da Conferência (visão alternativa, não usada no cálculo oficial)
+// Regra: para NFs cruzadas com XML, usa icms_xml; para o restante das NFs do período (sem XML conferido), usa o icms do ERP normalmente.
+function creditoXMLApuracao(lj){
+  const xmlAp = lj ? xmlRowsApuracao().filter(r=>String(r.empresa)===lj) : xmlRowsApuracao();
+  if(!xmlAp.length) return null; // Conferência XML não foi feita para este período/loja
+
+  // Soma do ICMS conforme XML para os itens efetivamente cruzados (exclui "sem_xml_item", que não tem XML)
+  const credXML = xmlAp.filter(r=>r.grupo!=='sem_xml_item').reduce((s,r)=>s+(r.icms_xml||0),0);
+
+  // Chaves de NF do ERP que JÁ foram cruzadas com XML neste período/loja (para não contar 2x)
+  const chavesCruzadas = new Set(xmlAp.map(r=>r.chave_erp));
+
+  // Crédito do ERP para as NFs do período que NÃO entraram na conferência XML
+  // (ex: notas sem chave, sem XML importado, ou fora do escopo da Query 6)
+  const eRowsAp = lj ? eRowsApuracao().filter(r=>String(r.empresa)===lj) : eRowsApuracao();
+  const credERPNaoCruzado = eRowsAp
+    .filter(r=>{
+      const chave=(r.chave_nfe||'').replace(/[^0-9]/g,'');
+      return !(chave.length===44 && chavesCruzadas.has(chave));
+    })
+    .reduce((s,r)=>s+r.icms,0);
+
+  return {
+    credXML: credXML + credERPNaoCruzado,
+    credXMLPuro: credXML,
+    credERPNaoCruzado,
+    qtdItensCruzados: xmlAp.filter(r=>r.grupo!=='sem_xml_item').length,
+    qtdNFsCruzadas: chavesCruzadas.size,
+  };
+}
+
 // ── CUPONS ─────────────────────────────────────────────────────
 function processarCupons(raw){
   const H=Object.keys(raw[0]);
@@ -1298,6 +1340,21 @@ function renderAp(){
   const tNfeICMS=sNfe.reduce((s,r)=>s+r.icms,0),tNfeBC=sNfe.reduce((s,r)=>s+r.bc,0),tNfeFat=sNfe.reduce((s,r)=>s+r.total,0);
   const tDeb=tCupICMS+tNfeICMS+tDevSD-tDevRD,tFat=tCupFat+tNfeFat;
   const saldoFinal=credTotal-tDeb,aPagar=Math.max(0,-saldoFinal),sCr=Math.max(0,saldoFinal);
+
+  // ── VISÃO ALTERNATIVA: ICMS a pagar considerando o crédito apurado pelos XMLs ──
+  // (não substitui o cálculo oficial acima; é só uma visão comparativa)
+  const credXMLInfo = creditoXMLApuracao(lj);
+  let xmlView = null;
+  if(credXMLInfo){
+    const credTotalXML = credXMLInfo.credXML + saldo - tDevRC;
+    const saldoFinalXML = credTotalXML - tDeb;
+    const aPagarXML = Math.max(0,-saldoFinalXML), sCrXML = Math.max(0,saldoFinalXML);
+    xmlView = {
+      credTotalXML, aPagarXML, sCrXML,
+      diferenca: aPagar - aPagarXML, // positivo = pagaria menos usando XML
+      ...credXMLInfo
+    };
+  }
   const am={};
   sCup.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n+=r.itens||1;});
   sNfe.forEach(r=>{const k=r.aliq+'%';if(!am[k])am[k]={bc:0,icms:0,n:0};am[k].bc+=r.bc;am[k].icms+=r.icms;am[k].n++;});
@@ -1312,6 +1369,18 @@ function renderAp(){
     +(aPagar>0
       ?'<div class="ap-box ap-pagar"><div class="ap-label r"><i class="ti ti-alert-triangle"></i> ICMS A PAGAR NO PERÍODO</div><div class="ap-num r">'+brl(aPagar)+'</div><div class="ap-sub">Débito '+brl(tDeb)+' − Crédito total '+brl(credTotal)+'</div></div>'
       :'<div class="ap-box ap-credor"><div class="ap-label g"><i class="ti ti-circle-check"></i> SALDO CREDOR</div><div class="ap-num g">'+brl(sCr)+'</div><div class="ap-sub">Transfere para o próximo período</div></div>')
+    +(xmlView
+      ?'<div class="card" style="border:1px solid var(--blue);background:var(--blue-lt)">'
+        +'<div class="card-t" style="color:var(--blue)"><i class="ti ti-file-search"></i>Visão comparativa — crédito conforme XML (Conferência XML)</div>'
+        +'<div style="font-size:12px;color:#475569;margin-bottom:.75rem">Esta visão substitui o crédito do ERP pelo valor de ICMS que consta nos XMLs das NF-e, para os itens já conferidos na aba <strong>Conferência XML</strong> neste período/loja. Não altera o cálculo oficial acima — é apenas uma referência.</div>'
+        +'<div class="metrics c3" style="margin-bottom:.75rem">'
+          +'<div class="metric"><div class="metric-label">Crédito conforme XML</div><div class="metric-value" style="font-size:15px;color:var(--blue)">'+brl(xmlView.credTotalXML)+'</div></div>'
+          +'<div class="metric"><div class="metric-label">'+(xmlView.aPagarXML>0?'ICMS a pagar (via XML)':'Saldo credor (via XML)')+'</div><div class="metric-value" style="font-size:15px;color:'+(xmlView.aPagarXML>0?'var(--red)':'var(--green)')+'">'+(xmlView.aPagarXML>0?brl(xmlView.aPagarXML):brl(xmlView.sCrXML))+'</div></div>'
+          +'<div class="metric"><div class="metric-label">Diferença vs. ERP atual</div><div class="metric-value" style="font-size:15px;color:'+(xmlView.diferenca>0?'var(--green)':(xmlView.diferenca<0?'var(--red)':'inherit'))+'">'+(xmlView.diferenca>0?'−'+brl(Math.abs(xmlView.diferenca))+' a pagar':(xmlView.diferenca<0?'+'+brl(Math.abs(xmlView.diferenca))+' a pagar':brl(0)))+'</div></div>'
+        +'</div>'
+        +'<div style="font-size:11px;color:#64748B">Baseado em '+xmlView.qtdItensCruzados.toLocaleString('pt-BR')+' itens cruzados em '+xmlView.qtdNFsCruzadas.toLocaleString('pt-BR')+' NFs conferidas com XML neste período'+(lj?' (loja '+lj+')':'')+'. NFs do período sem XML conferido mantiveram o crédito do ERP ('+brl(xmlView.credERPNaoCruzado)+').</div>'
+      +'</div>'
+      :(MES_APURACAO?'<div class="alert al-info" style="margin-top:.75rem"><i class="ti ti-info-circle"></i> Para ver a visão comparativa com o crédito dos XMLs, importe e cruze os arquivos na aba <strong>Conferência XML</strong>.</div>':''))
     +'<div class="card"><div class="card-t"><i class="ti ti-report"></i>Memória de Cálculo Completa</div><table>'
     +'<tr><td class="td-dim">Total NFs compras (referência)</td><td class="td-r">'+brl(tENF)+'</td></tr>'
     +'<tr><td class="td-dim">Base de cálculo ICMS entradas</td><td class="td-b">'+brl(tEBC)+'</td></tr>'
@@ -1627,6 +1696,7 @@ function cruzarERPcomXML(errosXML){
       empresa:erpItens[0].empresa,
       razao:erpItens[0].razao||xmlItens[0].xNomeEmit,
       emissao:erpItens[0].emissao,
+      movimento:erpItens[0].movimento||erpItens[0].emissao,
     };
 
     // ── Cruzar item a item ───────────────────────────────────
@@ -1694,6 +1764,7 @@ function cruzarERPcomXML(errosXML){
         chave_erp:chaveXML,nfe_erp:nfInfo.nNF,
         empresa:nfInfo.empresa,razao:nfInfo.razao,
         emissao_erp:nfInfo.emissao,
+        movimento_erp:nfInfo.movimento,
         // Produto XML
         num_item:xi.numItem,
         xProd:xi.xProd,
