@@ -433,7 +433,7 @@ input[type=number]:focus,select.fi:focus{outline:none;border-color:var(--thalia-
       </div>
     </div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Loja</th><th class="td-r">Crédito (Entradas)</th><th class="td-r">Débito (Saídas)</th><th class="td-r">ICMS a pagar</th><th class="td-r">Saldo credor</th></tr></thead>
+      <thead><tr><th>Loja</th><th class="td-r">Crédito (Entradas)</th><th class="td-r">Débito (Saídas)</th><th class="td-r">ICMS a pagar</th><th class="td-r">Saldo credor</th><th class="td-r" id="th-lj-xml-cred" style="display:none">Crédito via XML</th><th class="td-r" id="th-lj-xml-pagar" style="display:none">ICMS a pagar via XML</th><th class="td-r" id="th-lj-xml-dif" style="display:none">Diferença</th></tr></thead>
       <tbody id="tb-lj"></tbody><tfoot id="tf-lj"></tfoot>
     </table></div>
   </div>
@@ -1420,14 +1420,31 @@ function renderLj(){
     const dRC=dr.filter(r=>r.impacto==='REDUZ_CREDITO').reduce((s,r)=>s+r.icms,0);
     const fat=cr.reduce((s,r)=>s+r.fat,0)+nr.reduce((s,r)=>s+r.total,0);
     const pagar=Math.max(0,(db-dRD)-(c-dRC)),scred=Math.max(0,(c-dRC)-(db-dRD));
-    return{l,fat,cred:c,credLiq:c-dRC,deb:db,debLiq:db-dRD,devRD:dRD,devRC:dRC,pagar,scred,pct:fat>0?((db-dRD)/fat*100):0};
+    // Visão alternativa: crédito conforme XML para esta loja
+    const xmlInfo=creditoXMLApuracao(l);
+    let xmlPagar=null,xmlCred=null,xmlDif=null;
+    if(xmlInfo){
+      xmlCred=xmlInfo.credXML;
+      const credLiqXML=xmlCred-dRC;
+      xmlPagar=Math.max(0,(db-dRD)-credLiqXML);
+      xmlDif=pagar-xmlPagar; // positivo = pagaria menos via XML
+    }
+    return{l,fat,cred:c,credLiq:c-dRC,deb:db,debLiq:db-dRD,devRD:dRD,devRC:dRC,pagar,scred,pct:fat>0?((db-dRD)/fat*100):0,xmlCred,xmlPagar,xmlDif};
   }).sort((a,b)=>b.pagar-a.pagar);
   if(chLj)chLj.destroy();
   const chEl=G('ch-lj');
   if(chEl)chLj=new Chart(chEl,{type:'bar',data:{labels:dados.map(d=>'L'+d.l),datasets:[{label:'Crédito',data:dados.map(d=>+d.credLiq.toFixed(2)),backgroundColor:'rgba(13,122,95,.7)',borderRadius:4},{label:'Débito',data:dados.map(d=>+d.debLiq.toFixed(2)),backgroundColor:'rgba(214,43,43,.7)',borderRadius:4},{label:'A pagar',data:dados.map(d=>+d.pagar.toFixed(2)),backgroundColor:'rgba(192,57,43,.9)',borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$'+Number(v).toLocaleString('pt-BR'),font:{family:'Inter',size:11}},grid:{color:'rgba(0,0,0,.06)'}},x:{grid:{display:false},ticks:{font:{family:'Inter',size:11}}}}}});
   const tC=dados.reduce((s,d)=>s+d.credLiq,0),tD=dados.reduce((s,d)=>s+d.debLiq,0),tP=dados.reduce((s,d)=>s+d.pagar,0),tS=dados.reduce((s,d)=>s+d.scred,0),tF=dados.reduce((s,d)=>s+d.fat,0);
-  const tb=G('tb-lj');if(tb)tb.innerHTML=dados.map(d=>'<tr><td><span class="badge b-gray">Loja '+d.l+'</span></td><td class="td-r">'+brl(d.fat)+'</td><td class="td-g">'+brl(d.credLiq)+'</td><td class="td-r2">'+brl(d.debLiq)+'</td><td style="text-align:right;color:var(--green)">'+(d.devRD>0?brl(d.devRD):'—')+'</td><td style="text-align:right;font-weight:700;color:'+(d.pagar>0?'var(--red)':'var(--green)')+'">'+(d.pagar>0?brl(d.pagar):'<span style="color:var(--green)">Credor</span>')+'</td><td class="td-r">'+d.pct.toFixed(2)+'%</td></tr>').join('');
-  const tf=G('tf-lj');if(tf)tf.innerHTML='<tr><td>Consolidado</td><td class="td-r">'+brl(tF)+'</td><td class="td-g">'+brl(tC)+'</td><td class="td-r2">'+brl(tD)+'</td><td style="text-align:right;color:var(--green)">'+brl(dados.reduce((s,d)=>s+d.devRD,0))+'</td><td style="text-align:right;color:var(--red);font-weight:700">'+brl(tP)+'</td><td></td></tr>';
+  const temXML=dados.some(d=>d.xmlPagar!==null);
+  ['th-lj-xml-cred','th-lj-xml-pagar','th-lj-xml-dif'].forEach(id=>{const el=G(id);if(el)el.style.display=temXML?'':'none';});
+  const colXML=d=>temXML?(d.xmlPagar!==null
+      ?'<td class="td-b" style="color:var(--blue)">'+brl(d.xmlCred)+'</td><td class="td-r" style="font-weight:700;color:'+(d.xmlPagar>0?'var(--red)':'var(--green)')+'">'+(d.xmlPagar>0?brl(d.xmlPagar):'<span style="color:var(--green)">Credor</span>')+'</td><td class="td-r" style="color:'+(d.xmlDif>0?'var(--green)':(d.xmlDif<0?'var(--red)':'inherit'))+'">'+(d.xmlDif!==0?(d.xmlDif>0?'−':'+')+brl(Math.abs(d.xmlDif)):'—')+'</td>'
+      :'<td class="td-dim">—</td><td class="td-dim">—</td><td class="td-dim">—</td>'
+    ):'';
+  const tb=G('tb-lj');if(tb)tb.innerHTML=dados.map(d=>'<tr><td><span class="badge b-gray">Loja '+d.l+'</span></td><td class="td-r">'+brl(d.fat)+'</td><td class="td-g">'+brl(d.credLiq)+'</td><td class="td-r2">'+brl(d.debLiq)+'</td><td style="text-align:right;color:var(--green)">'+(d.devRD>0?brl(d.devRD):'—')+'</td><td style="text-align:right;font-weight:700;color:'+(d.pagar>0?'var(--red)':'var(--green)')+'">'+(d.pagar>0?brl(d.pagar):'<span style="color:var(--green)">Credor</span>')+'</td><td class="td-r">'+d.pct.toFixed(2)+'%</td>'+colXML(d)+'</tr>').join('');
+  const tXC=dados.reduce((s,d)=>s+(d.xmlCred||0),0),tXP=dados.reduce((s,d)=>s+(d.xmlPagar||0),0),tXD=tP-tXP;
+  const tfXML=temXML?'<td class="td-b" style="color:var(--blue)">'+brl(tXC)+'</td><td style="text-align:right;color:var(--red);font-weight:700">'+brl(tXP)+'</td><td style="text-align:right;color:'+(tXD>0?'var(--green)':(tXD<0?'var(--red)':'inherit'))+'">'+(tXD!==0?(tXD>0?'−':'+')+brl(Math.abs(tXD)):'—')+'</td>':'';
+  const tf=G('tf-lj');if(tf)tf.innerHTML='<tr><td>Consolidado</td><td class="td-r">'+brl(tF)+'</td><td class="td-g">'+brl(tC)+'</td><td class="td-r2">'+brl(tD)+'</td><td style="text-align:right;color:var(--green)">'+brl(dados.reduce((s,d)=>s+d.devRD,0))+'</td><td style="text-align:right;color:var(--red);font-weight:700">'+brl(tP)+'</td><td></td>'+tfXML+'</tr>';
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────────
