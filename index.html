@@ -184,6 +184,7 @@ input[type=number]:focus,select.fi:focus{outline:none;border-color:var(--thalia-
     <div class="upload-area"><div class="upload-label"><i class="ti ti-file-spreadsheet"></i>Arquivo de compras (.xlsx ou .csv)</div><input type="file" id="fi-e" accept=".xlsx,.xls,.csv"></div>
     <div id="pw-e" style="display:none" class="prog-wrap"><div class="prog-bar"><div class="prog-fill e" id="pb-e" style="width:0%"></div></div><div class="prog-txt" id="pt-e"></div></div>
     <div class="msg" id="msg-e"></div>
+    <div id="mes-apuracao-sel-wrap" style="display:none;margin-top:.75rem;padding:.75rem 1rem;background:var(--amber-lt);border:1px solid var(--amber);border-radius:8px;align-items:center;gap:10px;flex-wrap:wrap"></div>
     <div id="e-ok" style="display:none">
       <div class="metrics c4">
         <div class="metric"><div class="metric-label">NFs únicas</div><div class="metric-value blue" id="e-m-nfs">—</div></div>
@@ -941,39 +942,39 @@ function processarEntradas(raw){
   const eOk=G('e-ok');if(eOk)eOk.style.display='block';
   setProg('e',100,'Concluído!');
 
-  if(mesesArr.length>1){
-    // Mês de apuração = o mês com MAIS itens (normalmente o mês atual,
-    // já que o mês anterior só traz notas residuais de fim de mês)
-    let mesPrincipal = mesesArr[0];
-    mesesArr.forEach(m=>{ if(mesesCount[m] > mesesCount[mesPrincipal]) mesPrincipal = m; });
-    MES_APURACAO = mesPrincipal;
+  try{
+    if(mesesArr.length>1){
+      // Mês de apuração = o mês com MAIS itens (normalmente o mês atual,
+      // já que o mês anterior só traz notas residuais de fim de mês)
+      let mesPrincipal = mesesArr[0];
+      mesesArr.forEach(m=>{ if(mesesCount[m] > mesesCount[mesPrincipal]) mesPrincipal = m; });
+      MES_APURACAO = mesPrincipal;
 
-    const opcoesHtml = mesesArr.map(m=>{
-      const [ano,mes] = m.split('-');
-      const nomeMes = new Date(ano,mes-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
-      return '<option value="'+m+'" '+(m===mesPrincipal?'selected':'')+'>'+nomeMes+' ('+mesesCount[m].toLocaleString('pt-BR')+' itens)</option>';
-    }).join('');
+      const opcoesHtml = mesesArr.map(m=>{
+        const partes = m.split('-'); const ano=partes[0], mes=partes[1];
+        const nomeMes = new Date(parseInt(ano),parseInt(mes)-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+        return '<option value="'+m+'" '+(m===mesPrincipal?'selected':'')+'>'+nomeMes+' ('+mesesCount[m].toLocaleString('pt-BR')+' itens)</option>';
+      }).join('');
 
-    setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens carregados, contendo '+mesesArr.length+' meses (arquivo de Conferência XML). A Apuração/Por Loja/Dashboard usarão apenas o mês selecionado abaixo — a Conferência XML continua usando todos os meses.','var(--amber)');
+      setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens carregados, contendo '+mesesArr.length+' meses (arquivo de Conferência XML). A Apuração/Por Loja/Dashboard usarão apenas o mês selecionado abaixo — a Conferência XML continua usando todos os meses.','var(--amber)');
 
-    // Inserir seletor de mês de apuração (se ainda não existir)
-    let selDiv = G('mes-apuracao-sel-wrap');
-    if(!selDiv){
-      selDiv = document.createElement('div');
-      selDiv.id = 'mes-apuracao-sel-wrap';
-      selDiv.style = 'margin-top:.75rem;padding:.75rem 1rem;background:var(--amber-lt);border:1px solid var(--amber);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
-      const msgE = G('msg-e');
-      if(msgE && msgE.parentNode) msgE.parentNode.insertBefore(selDiv, msgE.nextSibling);
+      const selDiv = G('mes-apuracao-sel-wrap');
+      if(selDiv){
+        selDiv.style.display='flex';
+        selDiv.innerHTML = '<i class="ti ti-calendar" style="color:var(--amber)"></i>'
+          + '<span style="font-size:12px;font-weight:600;color:#92400E">Mês de apuração (Apuração Final / Por Loja / Dashboard):</span>'
+          + '<select id="sel-mes-apuracao" onchange="mudarMesApuracao(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit">'
+          + opcoesHtml + '</select>';
+      }
+    } else {
+      MES_APURACAO = mesesArr[0] || null;
+      setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens · '+E_NOTAS.length+' NFs carregadas.','var(--green)');
+      const selDiv = G('mes-apuracao-sel-wrap');
+      if(selDiv){ selDiv.style.display='none'; selDiv.innerHTML=''; }
     }
-    selDiv.innerHTML = '<i class="ti ti-calendar" style="color:var(--amber)"></i>'
-      + '<span style="font-size:12px;font-weight:600;color:var(--amber-dk,#92400E)">Mês de apuração (Apuração Final / Por Loja / Dashboard):</span>'
-      + '<select id="sel-mes-apuracao" onchange="mudarMesApuracao(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit">'
-      + opcoesHtml + '</select>';
-  } else {
+  }catch(errMes){
+    console.error('Erro ao processar seletor de mes:', errMes);
     MES_APURACAO = mesesArr[0] || null;
-    setMsg('e','✓ '+E_ROWS.length.toLocaleString('pt-BR')+' itens · '+E_NOTAS.length+' NFs carregadas.','var(--green)');
-    const selDiv = G('mes-apuracao-sel-wrap');
-    if(selDiv) selDiv.innerHTML='';
   }
 
   setTimeout(()=>{const pw=G('pw-e');if(pw)pw.style.display='none';},600);
